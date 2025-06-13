@@ -1,5 +1,5 @@
-# 20250611 数据链整合，标准化
-# prerequisition activate a20250611
+# 20250611 建立Dataset, 也可以直传LUTs.nc
+# prerequisition.txt
 #
 import numpy as np
 import pandas as pd

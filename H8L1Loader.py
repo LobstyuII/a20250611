@@ -200,8 +200,8 @@ def process_l1_file_to_small_nc(l1_file_path, lookup_df, output_path):
 
 def download_and_process(date, hour, minute, lookup_df, base_dir):
     """下载并处理单个文件"""
-    # 创建月份文件夹
-    month_dir = os.path.join(base_dir, f"{date.year:04d}", f"{date.month:02d}")
+    # 创建月份文件夹 - 修改路径包含H8L1
+    month_dir = os.path.join(base_dir, "H8L1", f"{date.year:04d}", f"{date.month:02d}")
     os.makedirs(month_dir, exist_ok=True)
 
     # 设置文件名和路径
@@ -309,34 +309,37 @@ def main():
         'H8L1_y': ds_lut['H8L1_y'].values
     })
 
-    # 设置日期范围和时间
+    # 设置日期范围和时间 - 修正为从2015年7月7日开始
     start_date = datetime.date(2015, 7, 7)
     end_date = datetime.date(2021, 12, 31)
     hours = list(range(0, 23))  # 00:00 - 22:00 UTC
     minutes = [0, 10, 20, 30, 40, 50]
 
-    # 按月份处理
+    # 创建H8L1基础目录
+    h8l1_base_dir = os.path.join(Data_path, "H8L1")
+    os.makedirs(h8l1_base_dir, exist_ok=True)
+
+    # 按月份处理 - 修正日期处理逻辑
     current_date = start_date
     while current_date <= end_date:
-        # 跳过不完整的月份（如果需要）
-        if current_date.day != 1:
-            current_date = datetime.date(current_date.year, current_date.month + 1, 1) \
-                if current_date.month < 12 else datetime.date(current_date.year + 1, 1, 1)
-            continue
-
         year = current_date.year
         month = current_date.month
 
         # 创建月份文件夹
-        month_dir = os.path.join(Data_path, "H8L1", f"{year:04d}", f"{month:02d}")
+        month_dir = os.path.join(h8l1_base_dir, f"{year:04d}", f"{month:02d}")
         os.makedirs(month_dir, exist_ok=True)
 
         logger.info(f"开始处理 {year:04d}-{month:02d} 的数据")
 
         # 准备当前月的任务
         tasks = []
-        temp_date = current_date
+        temp_date = current_date.replace(day=1)  # 从当月1号开始
         while temp_date.month == month and temp_date <= end_date:
+            # 跳过7月1-6日的数据（只从7月7日开始）
+            if year == 2015 and month == 7 and temp_date.day < 7:
+                temp_date += datetime.timedelta(days=1)
+                continue
+
             for hour in hours:
                 for minute in minutes:
                     tasks.append((temp_date, hour, minute))
