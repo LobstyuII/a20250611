@@ -17,7 +17,7 @@ logging.basicConfig(filename='h8l1_download.log', level=logging.INFO,
 logger = logging.getLogger()
 
 # FTP密钥文件
-CONFIG_FILE = "ftp_config#1.json"
+CONFIG_FILE = "ftp_config#2.json"
 
 def load_ftp_config():
     """从JSON文件加载FTP配置"""
