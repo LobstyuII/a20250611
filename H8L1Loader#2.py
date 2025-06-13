@@ -12,7 +12,7 @@ import glob
 import json
 
 # 设置日志配置
-logging.basicConfig(filename='h8l1_download.log', level=logging.INFO,
+logging.basicConfig(filename='h8l1_download#2.log', level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger()
 
@@ -333,8 +333,8 @@ def main():
         'H8L1_y': ds_lut['H8L1_y'].values
     })
 
-    # 设置日期范围和时间 - 修正为从2015年7月7日开始
-    start_date = datetime.date(2015, 7, 7)
+    # 设置日期范围和时间
+    start_date = datetime.date(2017, 1, 1)
     end_date = datetime.date(2021, 12, 31)
     hours = list(range(0, 23))  # 00:00 - 22:00 UTC
     minutes = [0, 10, 20, 30, 40, 50]
