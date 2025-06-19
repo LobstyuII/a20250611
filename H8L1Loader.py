@@ -10,14 +10,37 @@ import xarray as xr
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import glob
 import json
+import sys
+import csv
+import threading
+
+
+# 自定义日志过滤器 - 允许非warning级别的日志通过
+class NotWarningFilter(logging.Filter):
+    def filter(self, record):
+        return record.levelno != logging.WARNING
+
 
 # 设置日志配置
-logging.basicConfig(filename='h8l1_download.log', level=logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# 文件日志处理器
+file_handler = logging.FileHandler('h8l1_download.log')
+file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+
+# 终端日志处理器
+console_handler = logging.StreamHandler(sys.stdout)
+console_formatter = logging.Formatter('%(asctime)s - %(message)s')
+console_handler.setFormatter(console_formatter)
+console_handler.addFilter(NotWarningFilter())  # 过滤掉warning级别的日志
+logger.addHandler(console_handler)
 
 # FTP密钥文件
 CONFIG_FILE = "ftp_config#1.json"
+
 
 def load_ftp_config():
     """从JSON文件加载FTP配置"""
@@ -35,6 +58,7 @@ def load_ftp_config():
         logger.error(f"读取配置文件失败: {e}")
         raise
 
+
 # 加载FTP配置
 try:
     FTP_CONFIG = load_ftp_config()
@@ -45,67 +69,93 @@ except Exception as e:
     logger.critical("无法加载FTP配置，程序终止")
     exit(1)
 
-def download_from_ftp(ftp_path, local_filename, download_dir, max_retries=5, retry_delay=10):
-    """从FTP服务器下载文件，支持断点续传"""
-    logger.info(f"开始从FTP服务器下载文件: {ftp_path}")
+# 全局锁和缺失文件记录
+vacant_lock = threading.Lock()
+vacant_dates = set()
+vacant_file_path = None
+
+
+def record_vacant_date(date_str):
+    """记录缺失文件日期到CSV（线程安全）"""
+    global vacant_dates, vacant_file_path
+
+    with vacant_lock:
+        if date_str not in vacant_dates:
+            vacant_dates.add(date_str)
+            try:
+                # 使用追加模式写入
+                with open(vacant_file_path, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([date_str])
+                logger.warning(f"记录缺失文件: {date_str}")
+            except Exception as e:
+                logger.error(f"写入缺失文件记录失败: {e}")
+
+
+def download_from_ftp(ftp_path, local_filename, download_dir):
+    """从FTP服务器下载文件，当文件不存在时立即返回"""
+    logger.info(f"尝试从FTP服务器下载文件: {ftp_path}")
 
     # 创建下载目录
     if not os.path.exists(download_dir):
         os.makedirs(download_dir)
 
-    temp_filepath = os.path.join(download_dir, f"temp_{local_filename}")
     final_filepath = os.path.join(download_dir, local_filename)
-    resume_byte_pos = 0
 
-    # 如果文件已存在，检查文件大小用于断点续传
-    if os.path.exists(final_filepath):
-        resume_byte_pos = os.path.getsize(final_filepath)
-        logger.info(f"文件已存在，准备从 {resume_byte_pos} 字节处继续下载。")
+    try:
+        # 建立FTP连接
+        with ftplib.FTP(FTP_ADDRESS, timeout=30) as ftp:
+            ftp.login(FTP_UID, FTP_PW)
+            ftp.voidcmd("TYPE I")
 
-    attempt = 0
-    start_time = time.time()  # 记录连接开始时间
-
-    while attempt < max_retries:
-        try:
-            # 建立FTP连接
-            with ftplib.FTP(FTP_ADDRESS, timeout=retry_delay) as ftp:
-                ftp.login(FTP_UID, FTP_PW)
-                ftp.voidcmd("TYPE I")
+            # 检查文件是否存在
+            try:
                 file_size = ftp.size(ftp_path)
+            except ftplib.error_perm as e:
+                # 550错误表示文件不存在
+                if '550' in str(e):
+                    logger.warning(f"文件在FTP上不存在: {ftp_path}")
+                    return None
+                raise  # 其他权限错误继续抛出
 
-                # 如果文件已完整下载
-                if resume_byte_pos >= file_size:
-                    logger.info("文件已完整下载，无需重新下载。")
-                    return final_filepath
+            # 文件存在，开始下载
+            temp_filepath = os.path.join(download_dir, f"temp_{local_filename}")
 
-                # 打开临时文件，以写入模式（'wb'）写入
-                with open(temp_filepath, 'wb') as local_file:
-                    def callback(data):
-                        local_file.write(data)
+            # 检查并删除临时文件（如果存在）
+            if os.path.exists(temp_filepath):
+                logger.info(f"发现临时文件 {temp_filepath}，删除它并重新下载")
+                os.remove(temp_filepath)
 
-                    # 重新开始下载并使用断点续传
-                    ftp.retrbinary(f'RETR {ftp_path}', callback, rest=resume_byte_pos)
+            with open(temp_filepath, 'wb') as local_file:
+                def callback(data):
+                    local_file.write(data)
 
-                # 确认文件下载成功
-                if os.path.getsize(temp_filepath) == file_size:
-                    os.rename(temp_filepath, final_filepath)
-                    logger.info(f"文件下载成功: {final_filepath}")
-                    return final_filepath
-                else:
-                    os.remove(temp_filepath)
-                    raise Exception("下载文件大小不匹配")
+                # 从头开始下载（rest=0）
+                ftp.retrbinary(f'RETR {ftp_path}', callback, rest=0)
 
-        except ftplib.all_errors as e:
-            logger.warning(f"FTP文件下载失败: {e}, 重试 {attempt + 1}/{max_retries}...")
-            attempt += 1
-            time.sleep(retry_delay)
-        except Exception as e:
-            logger.error(f"未知错误: {e}")
-            break
+            # 确认文件下载成功
+            if os.path.getsize(temp_filepath) == file_size:
+                os.rename(temp_filepath, final_filepath)
+                logger.info(f"文件下载成功: {final_filepath}")
+                return final_filepath
+            else:
+                os.remove(temp_filepath)
+                raise Exception("下载文件大小不匹配")
 
-    logger.error(f"文件下载失败: 超过最大重试次数 {max_retries}")
+    except ftplib.all_errors as e:
+        logger.error(f"FTP文件下载失败: {e}")
+    except Exception as e:
+        logger.error(f"未知错误: {e}")
+    finally:
+        # 确保删除临时文件（如果存在）
+        temp_filepath = os.path.join(download_dir, f"temp_{local_filename}")
+        if os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
+
     return None
 
+
+# 其余函数保持不变（process_l1_file_to_small_nc, download_and_process, integrate_monthly_data）...
 
 def process_l1_file_to_small_nc(l1_file_path, lookup_df, output_path):
     """处理NetCDF文件并保存为小型数据集"""
@@ -224,7 +274,9 @@ def process_l1_file_to_small_nc(l1_file_path, lookup_df, output_path):
 
 def download_and_process(date, hour, minute, lookup_df, base_dir):
     """下载并处理单个文件"""
-    # 创建月份文件夹 - 修改路径包含H8L1
+    global vacant_file_path
+
+    # 创建月份文件夹
     month_dir = os.path.join(base_dir, "H8L1", f"{date.year:04d}", f"{date.month:02d}")
     os.makedirs(month_dir, exist_ok=True)
 
@@ -245,6 +297,13 @@ def download_and_process(date, hour, minute, lookup_df, base_dir):
     # 下载文件
     downloaded_file = download_from_ftp(ftp_path, local_filename, month_dir)
 
+    # 处理文件缺失情况
+    if downloaded_file is None:
+        # 生成日期字符串格式：YYYYMMDD_HHMM
+        date_str = f"{date.year:04d}{date.month:02d}{date.day:02d}_{hour:02d}{minute:02d}"
+        record_vacant_date(date_str)
+        return None
+
     # 如果文件下载成功，则处理文件
     if downloaded_file:
         success = process_l1_file_to_small_nc(downloaded_file, lookup_df, small_nc_path)
@@ -254,75 +313,122 @@ def download_and_process(date, hour, minute, lookup_df, base_dir):
             os.remove(downloaded_file)
             logger.info(f"已删除下载的原始数据文件: {downloaded_file}")
             return small_nc_path
-    else:
-        logger.error(f"无法下载文件: {ftp_path}")
 
     return None
 
 
 def integrate_monthly_data(month_dir, year, month):
-    """整合月度数据"""
+    """整合月度数据 - 使用增量写入方式（修改：不删除小文件）"""
     # 查找所有小文件
     small_files = glob.glob(os.path.join(month_dir, "H8_*.nc"))
     if not small_files:
         logger.warning(f"在目录 {month_dir} 中未找到小文件")
         return None
 
-    # 创建月度数据集
-    monthly_ds = None
+    # 按月排序文件
+    small_files.sort()
 
-    for file_path in small_files:
-        try:
-            with nc.Dataset(file_path, 'r') as ds_small:
-                # 获取时间
-                time_str = ds_small.getncattr('time')
-                dt = datetime.datetime.strptime(time_str, "%Y%m%d%H%M")
-                time_value = np.datetime64(dt)
+    # 月度数据集输出路径
+    output_path = os.path.join(month_dir, f"H8_monthly_{year:04d}{month:02d}.nc")
 
-                # 创建临时数据集
-                ds_temp = xr.Dataset({
-                    'Albedo_01': (['time', 'Station'], [ds_small['Albedo_01'][:]]),
-                    'Albedo_02': (['time', 'Station'], [ds_small['Albedo_02'][:]]),
-                    'Albedo_03': (['time', 'Station'], [ds_small['Albedo_03'][:]]),
-                    'Albedo_04': (['time', 'Station'], [ds_small['Albedo_04'][:]]),
-                    'Albedo_05': (['time', 'Station'], [ds_small['Albedo_05'][:]]),
-                    'Albedo_06': (['time', 'Station'], [ds_small['Albedo_06'][:]]),
-                    'SAZ': (['time', 'Station'], [ds_small['SAZ'][:]]),
-                    'SAA': (['time', 'Station'], [ds_small['SAA'][:]]),
-                    'SOZ': (['time', 'Station'], [ds_small['SOZ'][:]]),
-                    'SOA': (['time', 'Station'], [ds_small['SOA'][:]])
-                }, coords={
-                    'time': [time_value],
-                    'Station': [s.decode() for s in ds_small['Station'][:]]
-                })
-
-                # 合并到月度数据集
-                if monthly_ds is None:
-                    monthly_ds = ds_temp
-                else:
-                    monthly_ds = xr.concat([monthly_ds, ds_temp], dim='time')
-
-        except Exception as e:
-            logger.error(f"处理小文件 {file_path} 失败: {e}")
-
-    # 保存月度数据集
-    if monthly_ds is not None:
-        output_path = os.path.join(month_dir, f"H8_monthly_{year:04d}{month:02d}.nc")
-        monthly_ds.to_netcdf(output_path)
-        logger.info(f"月度数据集已保存: {output_path}")
-
-        # 删除小文件
-        for file_path in small_files:
-            os.remove(file_path)
-        logger.info(f"已删除 {len(small_files)} 个小文件")
-
+    # 如果月度文件已存在，跳过处理
+    if os.path.exists(output_path):
+        logger.info(f"月度数据集已存在: {output_path}，跳过整合")
         return output_path
 
-    return None
+    logger.info(f"开始整合 {year:04d}-{month:02d} 的 {len(small_files)} 个小文件")
 
+    # 创建空的月度数据集文件
+    with nc.Dataset(output_path, 'w', format='NETCDF4') as ds_out:
+        # 初始化维度
+        ds_out.createDimension('time', None)  # 无限维度
+        ds_out.createDimension('Station', None)  # 无限维度
+
+        # 创建变量
+        time_var = ds_out.createVariable('time', 'f8', ('time',))
+        station_var = ds_out.createVariable('Station', str, ('Station',))
+        albedo_01_var = ds_out.createVariable('Albedo_01', 'f4', ('time', 'Station'))
+        albedo_02_var = ds_out.createVariable('Albedo_02', 'f4', ('time', 'Station'))
+        albedo_03_var = ds_out.createVariable('Albedo_03', 'f4', ('time', 'Station'))
+        albedo_04_var = ds_out.createVariable('Albedo_04', 'f4', ('time', 'Station'))
+        albedo_05_var = ds_out.createVariable('Albedo_05', 'f4', ('time', 'Station'))
+        albedo_06_var = ds_out.createVariable('Albedo_06', 'f4', ('time', 'Station'))
+        saz_var = ds_out.createVariable('SAZ', 'f4', ('time', 'Station'))
+        saa_var = ds_out.createVariable('SAA', 'f4', ('time', 'Station'))
+        soz_var = ds_out.createVariable('SOZ', 'f4', ('time', 'Station'))
+        soa_var = ds_out.createVariable('SOA', 'f4', ('time', 'Station'))
+
+        # 初始化索引
+        time_index = 0
+        station_names = None
+        station_count = 0
+
+        # 处理每个小文件
+        for i, file_path in enumerate(small_files):
+            if (i + 1) % 100 == 0:
+                logger.info(f"整合进度: {i + 1}/{len(small_files)}")
+
+            try:
+                # 从文件名提取时间
+                filename = os.path.basename(file_path)
+                # 文件名格式: H8_YYYYMMDD_HHMM.nc
+                time_str = filename.split('_')[1] + filename.split('_')[2].split('.')[0]
+                dt = datetime.datetime.strptime(time_str, "%Y%m%d%H%M")
+                time_value = (dt - datetime.datetime(1970, 1, 1)).total_seconds()
+
+                with nc.Dataset(file_path, 'r') as ds_small:
+                    # 处理站点名称（可能是字符串或字节）
+                    station_data = ds_small['Station'][:]
+                    if isinstance(station_data[0], bytes):
+                        current_stations = [s.decode('utf-8') for s in station_data]
+                    else:
+                        current_stations = station_data.tolist()
+
+                    # 如果是第一个文件，初始化站点信息
+                    if station_names is None:
+                        station_names = current_stations
+                        station_count = len(station_names)
+                        station_var[:] = np.array(station_names, dtype='S')
+
+                    # 检查站点一致性
+                    if current_stations != station_names:
+                        logger.warning(f"文件 {filename} 的站点与前文件不一致")
+                        continue
+
+                    # 添加时间值
+                    time_var[time_index] = time_value
+
+                    # 添加数据
+                    albedo_01_var[time_index, :] = ds_small['Albedo_01'][:]
+                    albedo_02_var[time_index, :] = ds_small['Albedo_02'][:]
+                    albedo_03_var[time_index, :] = ds_small['Albedo_03'][:]
+                    albedo_04_var[time_index, :] = ds_small['Albedo_04'][:]
+                    albedo_05_var[time_index, :] = ds_small['Albedo_05'][:]
+                    albedo_06_var[time_index, :] = ds_small['Albedo_06'][:]
+                    saz_var[time_index, :] = ds_small['SAZ'][:]
+                    saa_var[time_index, :] = ds_small['SAA'][:]
+                    soz_var[time_index, :] = ds_small['SOZ'][:]
+                    soa_var[time_index, :] = ds_small['SOA'][:]
+
+                    time_index += 1
+
+            except Exception as e:
+                logger.error(f"处理小文件 {file_path} 失败: {e}")
+
+    # 添加时间属性
+    with nc.Dataset(output_path, 'a') as ds_out:
+        time_var = ds_out['time']
+        time_var.units = 'seconds since 1970-01-01 00:00:00'
+        time_var.calendar = 'standard'
+
+    logger.info(f"月度数据集已保存: {output_path}")
+
+    return output_path
 
 def main():
-    Data_path = "D:/H8_data"
+    global vacant_file_path, vacant_dates
+
+    Data_path = "H8_data"
     LUTs_file = os.path.join(Data_path, "LUTs.nc")
     ds_lut = xr.open_dataset(LUTs_file)
 
@@ -333,17 +439,36 @@ def main():
         'H8L1_y': ds_lut['H8L1_y'].values
     })
 
-    # 设置日期范围和时间 - 修正为从2015年7月7日开始
-    start_date = datetime.date(2015, 7, 7)
+    # 缺失文件记录路径
+    h8l1_base_dir = os.path.join(Data_path, "H8L1")
+    os.makedirs(h8l1_base_dir, exist_ok=True)
+    vacant_file_path = os.path.join(h8l1_base_dir, "H8L1_vacant.csv")
+
+    # 加载已有的缺失记录
+    if os.path.exists(vacant_file_path):
+        try:
+            with open(vacant_file_path, 'r') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if row:  # 跳过空行
+                        vacant_dates.add(row[0])
+            logger.info(f"已加载 {len(vacant_dates)} 条缺失文件记录")
+        except Exception as e:
+            logger.error(f"加载缺失文件记录失败: {e}")
+    else:
+        # 创建新的CSV文件并写入标题
+        with open(vacant_file_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["vacant_date"])
+        logger.info("创建新的缺失文件记录")
+
+    # 设置日期范围和时间
+    start_date = datetime.date(2016, 3, 1)
     end_date = datetime.date(2018, 12, 31)
     hours = list(range(0, 24))  # 00:00 - 23:00 UTC
     minutes = [0, 10, 20, 30, 40, 50]
 
-    # 创建H8L1基础目录
-    h8l1_base_dir = os.path.join(Data_path, "H8L1")
-    os.makedirs(h8l1_base_dir, exist_ok=True)
-
-    # 按月份处理 - 修正日期处理逻辑
+    # 按月份处理
     current_date = start_date
     while current_date <= end_date:
         year = current_date.year
@@ -395,7 +520,7 @@ def main():
             current_date = datetime.date(year, month + 1, 1)
 
     logger.info("所有月份处理完成")
-
+    logger.info(f"总共缺失 {len(vacant_dates)} 个文件，记录在: {vacant_file_path}")
 
 if __name__ == "__main__":
     main()
