@@ -1,3 +1,5 @@
+# 检查netcdf的格式和数据
+
 import netCDF4 as nc
 import numpy as np
 import os
@@ -91,7 +93,7 @@ def print_nc_file_details(file_path):
 
 if __name__ == "__main__":
     # 指定要查看的文件路径
-    file_path = r"D:\H8_data\H8L1\2015\08\H8_20150801_0250.nc"
+    file_path = r"D:\\H8_data\\H8L1\\2015\\08\\H8_monthly_201508.nc"
 
     # 打印文件详细信息
     print_nc_file_details(file_path)

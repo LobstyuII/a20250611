@@ -155,46 +155,45 @@ def download_from_ftp(ftp_path, local_filename, download_dir):
     return None
 
 
-# 其余函数保持不变（process_l1_file_to_small_nc, download_and_process, integrate_monthly_data）...
-
 def process_l1_file_to_small_nc(l1_file_path, lookup_df, output_path):
-    """处理NetCDF文件并保存为小型数据集"""
+    """处理NetCDF文件并保存为小型数据集 - 优化内存版本"""
     try:
-        with nc.Dataset(l1_file_path, 'r') as dataset:
-            # 获取所需变量
-            albedo_01 = dataset.variables['albedo_01'][:]
-            albedo_02 = dataset.variables['albedo_02'][:]
-            albedo_03 = dataset.variables['albedo_03'][:]
-            albedo_04 = dataset.variables['albedo_04'][:]
-            albedo_05 = dataset.variables['albedo_05'][:]
-            albedo_06 = dataset.variables['albedo_06'][:]
-            saz = dataset.variables['SAZ'][:]
-            saa = dataset.variables['SAA'][:]
-            soz = dataset.variables['SOZ'][:]
-            soa = dataset.variables['SOA'][:]
+        # 创建输出文件
+        with nc.Dataset(output_path, 'w', format='NETCDF4') as ds_out:
+            # 创建维度
+            ds_out.createDimension('Station', len(lookup_df))
 
-            # 创建小型数据集
-            with nc.Dataset(output_path, 'w', format='NETCDF4') as ds_out:
-                # 创建维度
-                ds_out.createDimension('Station', len(lookup_df))
+            # 创建变量
+            station_var = ds_out.createVariable('Station', str, ('Station',))
+            albedo_01_var = ds_out.createVariable('Albedo_01', 'f4', ('Station',))
+            albedo_02_var = ds_out.createVariable('Albedo_02', 'f4', ('Station',))
+            albedo_03_var = ds_out.createVariable('Albedo_03', 'f4', ('Station',))
+            albedo_04_var = ds_out.createVariable('Albedo_04', 'f4', ('Station',))
+            albedo_05_var = ds_out.createVariable('Albedo_05', 'f4', ('Station',))
+            albedo_06_var = ds_out.createVariable('Albedo_06', 'f4', ('Station',))
+            saz_var = ds_out.createVariable('SAZ', 'f4', ('Station',))
+            saa_var = ds_out.createVariable('SAA', 'f4', ('Station',))
+            soz_var = ds_out.createVariable('SOZ', 'f4', ('Station',))
+            soa_var = ds_out.createVariable('SOA', 'f4', ('Station',))
 
-                # 创建变量
-                station_var = ds_out.createVariable('Station', str, ('Station',))
-                albedo_01_var = ds_out.createVariable('Albedo_01', 'f4', ('Station',))
-                albedo_02_var = ds_out.createVariable('Albedo_02', 'f4', ('Station',))
-                albedo_03_var = ds_out.createVariable('Albedo_03', 'f4', ('Station',))
-                albedo_04_var = ds_out.createVariable('Albedo_04', 'f4', ('Station',))
-                albedo_05_var = ds_out.createVariable('Albedo_05', 'f4', ('Station',))
-                albedo_06_var = ds_out.createVariable('Albedo_06', 'f4', ('Station',))
-                saz_var = ds_out.createVariable('SAZ', 'f4', ('Station',))
-                saa_var = ds_out.createVariable('SAA', 'f4', ('Station',))
-                soz_var = ds_out.createVariable('SOZ', 'f4', ('Station',))
-                soa_var = ds_out.createVariable('SOA', 'f4', ('Station',))
+            # 添加时间属性
+            ds_out.setncattr('time', os.path.basename(output_path).split('_')[2].split('.')[0])
 
-                # 添加时间属性
-                ds_out.setncattr('time', os.path.basename(output_path).split('_')[2].split('.')[0])
+            # 打开输入文件
+            with nc.Dataset(l1_file_path, 'r') as dataset:
+                # 获取变量引用（不加载数据）
+                albedo_01_var_in = dataset.variables['albedo_01']
+                albedo_02_var_in = dataset.variables['albedo_02']
+                albedo_03_var_in = dataset.variables['albedo_03']
+                albedo_04_var_in = dataset.variables['albedo_04']
+                albedo_05_var_in = dataset.variables['albedo_05']
+                albedo_06_var_in = dataset.variables['albedo_06']
+                saz_var_in = dataset.variables['SAZ']
+                saa_var_in = dataset.variables['SAA']
+                soz_var_in = dataset.variables['SOZ']
+                soa_var_in = dataset.variables['SOA']
 
-                # 填充数据
+                # 初始化列表
                 station_names = []
                 albedos_01 = []
                 albedos_02 = []
@@ -213,8 +212,8 @@ def process_l1_file_to_small_nc(l1_file_path, lookup_df, output_path):
                     h8l1_x = int(row['H8L1_x'])
                     h8l1_y = int(row['H8L1_y'])
 
-                    # 计算反照率除以cos(SOZ)
-                    soz_val = soz[h8l1_y, h8l1_x]
+                    # 直接读取单个点的SOZ值
+                    soz_val = soz_var_in[h8l1_y, h8l1_x]
                     soz_rad = np.deg2rad(soz_val)
                     cos_soz = np.cos(soz_rad)
 
@@ -222,22 +221,22 @@ def process_l1_file_to_small_nc(l1_file_path, lookup_df, output_path):
                     if cos_soz <= 0.01:
                         cos_soz = 0.01
 
-                    # 提取并校正反照率
+                    # 直接读取单个点的反照率值并校正
                     albedos = [
-                        albedo_01[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_02[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_03[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_04[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_05[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_06[h8l1_y, h8l1_x] / cos_soz
+                        albedo_01_var_in[h8l1_y, h8l1_x] / cos_soz,
+                        albedo_02_var_in[h8l1_y, h8l1_x] / cos_soz,
+                        albedo_03_var_in[h8l1_y, h8l1_x] / cos_soz,
+                        albedo_04_var_in[h8l1_y, h8l1_x] / cos_soz,
+                        albedo_05_var_in[h8l1_y, h8l1_x] / cos_soz,
+                        albedo_06_var_in[h8l1_y, h8l1_x] / cos_soz
                     ]
 
-                    # 提取角度值
+                    # 直接读取单个点的角度值
                     angles = [
-                        saz[h8l1_y, h8l1_x],
-                        saa[h8l1_y, h8l1_x],
+                        saz_var_in[h8l1_y, h8l1_x],
+                        saa_var_in[h8l1_y, h8l1_x],
                         soz_val,
-                        soa[h8l1_y, h8l1_x]
+                        soa_var_in[h8l1_y, h8l1_x]
                     ]
 
                     station_names.append(station_name)
@@ -252,25 +251,24 @@ def process_l1_file_to_small_nc(l1_file_path, lookup_df, output_path):
                     sozs.append(angles[2])
                     soas.append(angles[3])
 
-                # 写入数据
-                station_var[:] = np.array(station_names, dtype='S')
-                albedo_01_var[:] = np.array(albedos_01, dtype=np.float32)
-                albedo_02_var[:] = np.array(albedos_02, dtype=np.float32)
-                albedo_03_var[:] = np.array(albedos_03, dtype=np.float32)
-                albedo_04_var[:] = np.array(albedos_04, dtype=np.float32)
-                albedo_05_var[:] = np.array(albedos_05, dtype=np.float32)
-                albedo_06_var[:] = np.array(albedos_06, dtype=np.float32)
-                saz_var[:] = np.array(sazs, dtype=np.float32)
-                saa_var[:] = np.array(saas, dtype=np.float32)
-                soz_var[:] = np.array(sozs, dtype=np.float32)
-                soa_var[:] = np.array(soas, dtype=np.float32)
+            # 写入数据
+            station_var[:] = np.array(station_names, dtype='S')
+            albedo_01_var[:] = np.array(albedos_01, dtype=np.float32)
+            albedo_02_var[:] = np.array(albedos_02, dtype=np.float32)
+            albedo_03_var[:] = np.array(albedos_03, dtype=np.float32)
+            albedo_04_var[:] = np.array(albedos_04, dtype=np.float32)
+            albedo_05_var[:] = np.array(albedos_05, dtype=np.float32)
+            albedo_06_var[:] = np.array(albedos_06, dtype=np.float32)
+            saz_var[:] = np.array(sazs, dtype=np.float32)
+            saa_var[:] = np.array(saas, dtype=np.float32)
+            soz_var[:] = np.array(sozs, dtype=np.float32)
+            soa_var[:] = np.array(soas, dtype=np.float32)
 
-            logger.info(f"成功处理并保存小文件: {output_path}")
-            return True
+        logger.info(f"成功处理并保存小文件: {output_path}")
+        return True
     except Exception as e:
         logger.error(f"处理文件失败: {e}")
         return False
-
 
 def download_and_process(date, hour, minute, lookup_df, base_dir):
     """下载并处理单个文件"""
@@ -428,7 +426,7 @@ def integrate_monthly_data(month_dir, year, month):
 def main():
     global vacant_file_path, vacant_dates
 
-    Data_path = "H8_data"
+    Data_path = "D:\H8_data"
     LUTs_file = os.path.join(Data_path, "LUTs.nc")
     ds_lut = xr.open_dataset(LUTs_file)
 
@@ -463,7 +461,7 @@ def main():
         logger.info("创建新的缺失文件记录")
 
     # 设置日期范围和时间
-    start_date = datetime.date(2016, 3, 1)
+    start_date = datetime.date(2016, 7, 1)
     end_date = datetime.date(2018, 12, 31)
     hours = list(range(0, 24))  # 00:00 - 23:00 UTC
     minutes = [0, 10, 20, 30, 40, 50]
@@ -496,7 +494,7 @@ def main():
 
         # 使用线程池并行下载和处理
         futures = []
-        with ThreadPoolExecutor(max_workers=28) as executor:
+        with ThreadPoolExecutor(max_workers=25) as executor:
             for date, hour, minute in tasks:
                 future = executor.submit(
                     download_and_process, date, hour, minute, lookup_df, Data_path
