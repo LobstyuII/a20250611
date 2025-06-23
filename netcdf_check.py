@@ -1,5 +1,3 @@
-# 检查netcdf的格式和数据
-
 import netCDF4 as nc
 import numpy as np
 import os
@@ -45,12 +43,15 @@ def print_nc_file_details(file_path):
                 if 'Station' in var.dimensions:
                     print("  前5个数据点:")
                     try:
-                        # 直接获取数据，不需要额外解码
                         data = var[:5]
 
-                        # 如果是字符串类型，直接打印
-                        if var.dtype.kind in ['S', 'U']:  # S=bytes, U=unicode
+                        # 特殊处理字符串类型变量
+                        if var.dtype == np.dtype('O') or isinstance(var[0], str):
                             print(f"    {list(data)}")
+                        # 如果是字符数组(bytes)，解码为字符串
+                        elif var.dtype.kind == 'S':
+                            decoded_data = [str(d.item(), 'utf-8') for d in data]
+                            print(f"    {decoded_data}")
                         else:
                             print(f"    {data}")
                     except Exception as e:
@@ -59,8 +60,14 @@ def print_nc_file_details(file_path):
             # 打印前5个站点的所有变量值
             print("\n=== 前5个站点的数据值 ===")
             try:
-                # 直接获取站点名称，不需要解码
-                station_names = ds['Station'][:5]
+                # 获取站点名称
+                station_var = ds['Station']
+                if station_var.dtype == np.dtype('O') or isinstance(station_var[0], str):
+                    station_names = list(station_var[:5])
+                elif station_var.dtype.kind == 'S':
+                    station_names = [str(s.item(), 'utf-8') for s in station_var[:5]]
+                else:
+                    station_names = station_var[:5]
                 print("站点名称:", station_names)
 
                 # 列出所有数据变量（排除Station本身）
@@ -93,7 +100,7 @@ def print_nc_file_details(file_path):
 
 if __name__ == "__main__":
     # 指定要查看的文件路径
-    file_path = r"D:\H8_data\H8L2PAR\H08_20150707_1600_RFL021_FLDK.02401_02401.nc"
+    file_path = r"D:\H8_data\H8L2PAR\2015\07\H8L2PAR_20150707_0020.nc"
 
     # 打印文件详细信息
     print_nc_file_details(file_path)

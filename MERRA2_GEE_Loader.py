@@ -21,8 +21,8 @@ logging.basicConfig(
 
 
 def GEE_authorizing():
-    service_account = "lobstyu@premium-cipher-424203-d0.iam.gserviceaccount.com"
-    credentials_path = 'premium-cipher-424203-d0-c6894a29d00c.json'
+    service_account = "your-service-account@your-project.iam.gserviceaccount.com"  # 替换为您的服务账号
+    credentials_path = 'your-credentials.json'  # 替换为您的凭证文件路径
     try:
         credentials = ee.ServiceAccountCredentials(service_account, credentials_path)
         ee.Initialize(credentials)
@@ -47,10 +47,9 @@ def read_luts_nc(luts_path):
         # 筛选整点时间（小时）
         hourly_times = []
         for t in times:
-            # 转换为 pandas Timestamp 对象
             dt = pd.Timestamp(t)
             if dt.minute == 0 and dt.second == 0:
-                hourly_times.append(dt.to_pydatetime())  # 转换为 Python datetime 对象
+                hourly_times.append(dt.to_pydatetime())
 
         return stations, lats, lons, hourly_times
 
@@ -79,25 +78,25 @@ def get_feature_collection(stations, lats, lons):
         raise
 
 
-def save_hourly_data(dt, data_dict, stations, lats, lons, base_path):
-    """保存单小时数据到单独的NC文件"""
+def save_hourly_merra_data(dt, to3_data, stations, lats, lons, base_path):
+    """保存单小时MERRA-2数据到单独的NC文件"""
     try:
-        # 转换 numpy.datetime64 为 Python datetime
         if isinstance(dt, np.datetime64):
             dt = pd.Timestamp(dt).to_pydatetime()
 
         # 创建年月目录
         year = dt.strftime("%Y")
         month = dt.strftime("%m")
-        dir_path = os.path.join(base_path, "ERA5", year, month)
+        dir_path = os.path.join(base_path, "MERRA2", year, month)
         os.makedirs(dir_path, exist_ok=True)
 
-        # 文件路径
-        filename = f"ERA5_{dt.strftime('%Y%m%d_%H%M')}.nc"
+        # 文件命名格式为hhmm
+        filename = f"MERRA2_{dt.strftime('%Y%m%d_%H%M')}.nc"
         file_path = os.path.join(dir_path, filename)
 
-        # 如果文件已存在且完整，则跳过
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 1024:  # 1KB作为最小文件大小
+        # 检查文件是否已存在
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 1024:
+            logging.info(f"文件已存在: {filename}")
             return True
 
         # 创建新的NC文件
@@ -111,31 +110,20 @@ def save_hourly_data(dt, data_dict, stations, lats, lons, base_path):
             station_var = ds.createVariable('Station', str, ('Station',))
             lat_var = ds.createVariable('Lat', 'f4', ('Station',))
             lon_var = ds.createVariable('Lon', 'f4', ('Station',))
+            to3_var = ds.createVariable('TO3', 'f4', ('time', 'Station'), fill_value=-9999.0)
 
             # 设置时间属性
-            time_var.units = 'hours since 2015-07-07 00:00:00'
+            time_var.units = 'hours since 1980-01-01 00:00:00'  # MERRA-2起始时间
             time_var.calendar = 'standard'
 
-            # 写入坐标数据
+            # 写入数据
             time_var[:] = nc.date2num(dt, time_var.units, time_var.calendar)
-            station_var[:] = np.array(stations, dtype=object)  # 处理字符串数组
+            station_var[:] = np.array(stations, dtype=object)
             lat_var[:] = lats
             lon_var[:] = lons
+            to3_var[0, :] = to3_data
 
-            # 写入气象数据
-            band_names = [
-                'dewpoint_temperature_2m',
-                'temperature_2m',
-                'surface_pressure',
-                'total_precipitation',
-                'u_component_of_wind_10m',
-                'v_component_of_wind_10m'
-            ]
-
-            for band in band_names:
-                var = ds.createVariable(band, 'f4', ('time', 'Station'), fill_value=-9999.0)
-                var[0, :] = data_dict[band]
-
+        logging.info(f"成功保存: {filename}")
         return True
     except Exception as e:
         logging.error(f"保存 {dt} 数据失败: {e}")
@@ -143,16 +131,15 @@ def save_hourly_data(dt, data_dict, stations, lats, lons, base_path):
         return False
 
 
-def process_hourly_data(dt, collection, bands, poi_fc, stations, lats, lons, base_path, max_retries=5):
-    """处理单小时数据并保存到单独文件（带重试机制）"""
+def process_hourly_merra_data(dt, collection, poi_fc, stations, lats, lons, base_path, max_retries=5):
+    """处理单小时MERRA-2数据并保存（带重试机制）"""
     retry_count = 0
     while retry_count < max_retries:
         try:
-            # 转换 numpy.datetime64 为 Python datetime
             if isinstance(dt, np.datetime64):
                 dt = pd.Timestamp(dt).to_pydatetime()
 
-            # 计算时间范围（整点）
+            # MERRA-2时间范围（小时数据）
             start_dt = dt.strftime('%Y-%m-%dT%H:%M:%S')
             end_dt = (dt + datetime.timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S')
 
@@ -163,62 +150,57 @@ def process_hourly_data(dt, collection, bands, poi_fc, stations, lats, lons, bas
                 logging.warning(f"{start_dt} 没有数据")
                 return False
 
-            # 选择所需波段
-            image = image.select(bands)
+            # 选择TO3波段
+            image = image.select('TO3')
 
             # 采样POI
             sampled = image.sampleRegions(
                 collection=poi_fc,
-                scale=1000,
+                scale=1000,  # MERRA-2分辨率约50km，使用1000m采样
                 geometries=False
             )
 
             # 获取采样结果
             sampled_dict = sampled.getInfo()
 
-            # 检查采样结果
             if 'features' not in sampled_dict or len(sampled_dict['features']) == 0:
                 logging.warning(f"{start_dt} 没有采样结果")
                 return False
 
-            # 提取数据
-            data_dict = {band: [] for band in bands}
+            # 提取TO3数据
+            to3_data = []
             station_ids = []
 
             for feature in sampled_dict['features']:
                 props = feature['properties']
                 station_ids.append(props['Station'])
-                for band in bands:
-                    # 处理可能的缺失值
-                    value = props.get(band)
-                    if value is None:
-                        value = -9999.0
-                    data_dict[band].append(value)
+                value = props.get('TO3', -9999.0)
+                to3_data.append(value)
 
             # 按原始站点顺序排序
-            sorted_data = {band: [] for band in bands}
+            sorted_to3 = []
             for station in stations:
                 if station in station_ids:
                     idx = station_ids.index(station)
-                    for band in bands:
-                        sorted_data[band].append(data_dict[band][idx])
+                    sorted_to3.append(to3_data[idx])
                 else:
-                    for band in bands:
-                        sorted_data[band].append(-9999.0)
+                    sorted_to3.append(-9999.0)
 
-            # 保存到单独文件
-            return save_hourly_data(dt, sorted_data, stations, lats, lons, base_path)
+            # 保存数据
+            return save_hourly_merra_data(dt, sorted_to3, stations, lats, lons, base_path)
 
+        except ee.EEException as e:
+            retry_count += 1
+            logging.warning(f"GEE错误 ({e})，重试 {retry_count}/{max_retries}")
+            time.sleep(10 * retry_count)
         except Exception as e:
             retry_count += 1
-            error_type = type(e).__name__
-            logging.warning(f"处理 {dt} 时出错 ({error_type}): {e}，重试 {retry_count}/{max_retries}")
-            time.sleep(5 * retry_count)  # 指数退避等待
+            logging.error(f"处理 {dt} 时出错: {e}，重试 {retry_count}/{max_retries}")
+            time.sleep(5)
+            traceback.print_exc()
 
-            if retry_count >= max_retries:
-                logging.error(f"处理 {dt} 失败，已达到最大重试次数")
-                traceback.print_exc()
-                return False
+    logging.error(f"处理 {dt} 失败，已达到最大重试次数")
+    return False
 
 
 def main():
@@ -226,7 +208,7 @@ def main():
     GEE_authorizing()
 
     # 数据路径
-    data_path = "D:/H8_data"
+    data_path = "D:/MERRA2_data"  # 修改为您的数据存储路径
     luts_path = os.path.join(data_path, "LUTs.nc")
 
     # 读取LUTs.nc文件
@@ -236,22 +218,13 @@ def main():
     # 创建FeatureCollection
     poi_fc = get_feature_collection(stations, lats, lons)
 
-    # 定义GEE ImageCollection和波段
-    collection = ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY")
-    bands = [
-        'dewpoint_temperature_2m',
-        'temperature_2m',
-        'surface_pressure',
-        'total_precipitation',
-        'u_component_of_wind_10m',
-        'v_component_of_wind_10m'
-    ]
+    # 定义MERRA-2 ImageCollection
+    collection = ee.ImageCollection("NASA/GSFC/MERRA/slv/2")
+    logging.info("MERRA-2 数据集加载成功")
 
     # 准备任务队列
     tasks = []
     for dt in hourly_times:
-        # 检查文件是否已存在
-        # 转换 numpy.datetime64 为 Python datetime
         if isinstance(dt, np.datetime64):
             py_dt = pd.Timestamp(dt).to_pydatetime()
         else:
@@ -259,10 +232,10 @@ def main():
 
         year = py_dt.strftime("%Y")
         month = py_dt.strftime("%m")
-        filename = f"ERA5_{py_dt.strftime('%Y%m%d_%H%M')}.nc"
-        file_path = os.path.join(data_path, "ERA5", year, month, filename)
+        filename = f"MERRA2_{py_dt.strftime('%Y%m%d_%H%M')}.nc"
+        file_path = os.path.join(data_path, "MERRA2", year, month, filename)
 
-        # 如果文件不存在或不完整，则加入任务队列
+        # 检查文件是否需要下载
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 1024:
             tasks.append(dt)
 
@@ -273,60 +246,52 @@ def main():
     failed_count = 0
     total_tasks = len(tasks)
 
-    # 设置并行线程数（GEE限制为10）
-    max_workers = 8
+    # 设置并行线程数（建议4-8个）
+    max_workers = 6
 
-    with tqdm(total=total_tasks, desc="下载进度") as pbar:
+    with tqdm(total=total_tasks, desc="下载MERRA-2数据") as pbar:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有任务
             futures = {executor.submit(
-                process_hourly_data,
-                dt, collection, bands, poi_fc, stations, lats, lons, data_path
+                process_hourly_merra_data,
+                dt, collection, poi_fc, stations, lats, lons, data_path
             ): dt for dt in tasks}
 
-            # 处理完成的任务
             for future in concurrent.futures.as_completed(futures):
                 dt = futures[future]
                 try:
-                    result = future.result()
-                    if result:
+                    if future.result():
                         success_count += 1
                     else:
                         failed_count += 1
                 except Exception as e:
                     logging.error(f"任务处理异常: {e}")
                     failed_count += 1
-
                 pbar.update(1)
                 pbar.set_postfix_str(f"成功: {success_count}, 失败: {failed_count}")
 
     logging.info(f"处理完成! 成功: {success_count}, 失败: {failed_count}, 总数: {total_tasks}")
 
 
-def merge_era5_data(base_path, output_path):
-    """合并所有小时数据到单个NetCDF文件"""
+def merge_merra_data(base_path, output_path):
+    """合并所有小时MERRA-2数据到单个NetCDF文件"""
     try:
-        # 收集所有文件路径
         all_files = []
-        era5_dir = os.path.join(base_path, "ERA5")
+        merra_dir = os.path.join(base_path, "MERRA2")
 
-        for root, dirs, files in os.walk(era5_dir):
+        for root, dirs, files in os.walk(merra_dir):
             for file in files:
-                if file.endswith(".nc") and file.startswith("ERA5_"):
+                if file.endswith(".nc") and file.startswith("MERRA2_"):
                     all_files.append(os.path.join(root, file))
 
         if not all_files:
-            logging.error("未找到ERA5数据文件")
+            logging.error("未找到MERRA-2数据文件")
             return
 
         logging.info(f"找到 {len(all_files)} 个数据文件，开始合并...")
-
-        # 按文件名排序（即按时间排序）
         all_files.sort()
 
-        # 使用xarray打开并合并文件
         ds_list = []
-        for file in tqdm(all_files, desc="合并文件"):
+        for file in tqdm(all_files, desc="合并MERRA-2文件"):
             try:
                 ds = xr.open_dataset(file)
                 ds_list.append(ds)
@@ -337,24 +302,18 @@ def merge_era5_data(base_path, output_path):
             logging.error("没有有效文件可合并")
             return
 
-        # 沿时间维度合并
         combined = xr.concat(ds_list, dim="time")
-
-        # 关闭所有文件
-        for ds in ds_list:
-            ds.close()
-
-        # 保存合并后的数据集
         combined.to_netcdf(output_path)
         logging.info(f"成功合并数据到: {output_path}")
 
         # 验证文件
         try:
             ds = xr.open_dataset(output_path)
-            logging.info(f"合并后数据集信息: {ds.dims}")
+            logging.info(f"合并后数据集信息: \n{ds}")
             ds.close()
         except Exception as e:
             logging.error(f"验证输出文件失败: {e}")
+
 
     except Exception as e:
         logging.error(f"合并数据失败: {e}")
@@ -365,7 +324,7 @@ if __name__ == "__main__":
     # 第一步：下载数据
     main()
 
-    # 第二步：合并数据（在下载完成后手动运行）
-    # data_path = "D:/H8_data"
-    # output_nc = os.path.join(data_path, "ERA5_combined.nc")
-    # merge_era5_data(data_path, output_nc)
+    # 第二步：合并数据（在下载完成后运行）
+    # data_path = "D:/MERRA2_data"
+    # output_nc = os.path.join(data_path, "MERRA2_TO3_combined.nc")
+    # merge_merra_data(data_path, output_nc)
