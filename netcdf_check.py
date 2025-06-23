@@ -93,7 +93,7 @@ def print_nc_file_details(file_path):
 
 if __name__ == "__main__":
     # 指定要查看的文件路径
-    file_path = r"D:\\H8_data\\H8L1\\2015\\08\\H8_monthly_201508.nc"
+    file_path = r"D:\H8_data\H8L2PAR\H08_20150707_1600_RFL021_FLDK.02401_02401.nc"
 
     # 打印文件详细信息
     print_nc_file_details(file_path)

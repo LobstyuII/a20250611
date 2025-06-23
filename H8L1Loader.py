@@ -463,7 +463,7 @@ def main():
     # 设置日期范围和时间
     start_date = datetime.date(2016, 7, 1)
     end_date = datetime.date(2018, 12, 31)
-    hours = list(range(0, 24))  # 00:00 - 23:00 UTC
+    hours = list(range(0, 24))
     minutes = [0, 10, 20, 30, 40, 50]
 
     # 按月份处理

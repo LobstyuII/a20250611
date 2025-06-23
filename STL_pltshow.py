@@ -73,8 +73,23 @@ def main():
                 else:
                     data = station_data[label]
 
-                # 绘制曲线
-                ax.plot(data['time'], data, 'b-', linewidth=1.5)
+                if key == 'err':
+                    # 创建从y=0到残差值的垂直线
+                    times = data['time'].values
+                    values = data.values
+
+                    # 方法1：使用vlines高效绘制
+                    ax.vlines(
+                        x=times,
+                        ymin=0,
+                        ymax=values,
+                        colors='b',
+                        linewidth=0.5,
+                        alpha=0.7
+                    )
+
+                else:
+                    ax.plot(data['time'], data, 'b-', linewidth=1.5)
 
                 # 设置标签和网格
                 ax.set_ylabel(label, fontsize=12, rotation=0, labelpad=40, ha='right')

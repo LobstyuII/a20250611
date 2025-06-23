@@ -308,6 +308,9 @@ def integrate_monthly_data(month_dir, year, month):
         aot_var = ds_out.createVariable('AOT', 'f4', ('time', 'Station'))
         aot_uncertainty_var = ds_out.createVariable('AOT_Uncertainty', 'f4', ('time', 'Station'))
 
+        # 添加时间属性
+        ds_out.setncattr('time', os.path.basename(output_path).split('_')[2].split('.')[0])
+
         # 初始化索引
         time_index = 0
         station_names = None
@@ -375,13 +378,20 @@ def main():
     # 基础数据路径
     Data_path = "D:\\H8_Data"
 
-    # 加载查找表
-    lookup_path = os.path.join(Data_path, "station_xy_lookup_table.csv")
-    if not os.path.exists(lookup_path):
-        logger.error(f"查找表文件不存在: {lookup_path}")
+    # 使用LUTs.nc代替CSV查找表
+    lut_path = os.path.join(Data_path, "LUTs.nc")
+    if not os.path.exists(lut_path):
+        logger.error(f"查找表文件不存在: {lut_path}")
         return
 
-    lookup_df = pd.read_csv(lookup_path)
+    # 从NetCDF文件加载查找表
+    with xr.open_dataset(lut_path) as ds:
+        lookup_df = pd.DataFrame({
+            'Station': ds['Station'].values,
+            'L2ARP_x': ds['L2ARP_x'].values,
+            'L2ARP_y': ds['L2ARP_y'].values
+        })
+    logger.info(f"成功加载查找表，包含 {len(lookup_df)} 个站点")
 
     # 缺失文件记录路径
     h8l2arp_base_dir = os.path.join(Data_path, "H8L2ARP")
@@ -407,9 +417,9 @@ def main():
         logger.info("创建新的缺失文件记录")
 
     # 设置日期范围和时间
-    start_date = datetime.date(2015, 7, 15)
+    start_date = datetime.date(2015, 7, 1)
     end_date = datetime.date(2021, 12, 31)
-    hours = list(range(1, 9))  # 01:00 - 08:00 UTC
+    hours = list(range(0, 24))
     minutes = [0, 10, 20, 30, 40, 50]
 
     # 按月份处理
@@ -428,14 +438,19 @@ def main():
         tasks = []
         temp_date = current_date.replace(day=1)  # 从当月1号开始
         while temp_date.month == month and temp_date <= end_date:
+            # 跳过7月1-6日的数据（只从7月7日开始）
+            if year == 2015 and month == 7 and temp_date.day < 7:
+                temp_date += datetime.timedelta(days=1)
+                continue
+
             for hour in hours:
                 for minute in minutes:
                     tasks.append((temp_date, hour, minute))
             temp_date += datetime.timedelta(days=1)
 
-        # 使用线程池并行下载和处理（线程数改为10）
+        # 使用线程池并行下载和处理
         futures = []
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=20) as executor:
             for date, hour, minute in tasks:
                 future = executor.submit(
                     download_and_process, date, hour, minute, lookup_df, Data_path
