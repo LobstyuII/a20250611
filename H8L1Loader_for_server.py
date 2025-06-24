@@ -156,55 +156,72 @@ def download_from_ftp(ftp_path, local_filename, download_dir):
 
 
 def process_l1_file_to_small_nc(l1_file_path, lookup_df, output_path):
-    """使用Xarray+Dask优化内存处理"""
+    """处理NetCDF文件并保存为小型数据集 - 优化内存版本"""
     try:
-        # 读取坐标点
-        points = lookup_df[['H8L1_y', 'H8L1_x']].astype(int).values
+        # 获取所有站点的坐标（向量化操作）
+        stations = lookup_df['Station'].values
+        h8l1_x = lookup_df['H8L1_x'].values.astype(int)
+        h8l1_y = lookup_df['H8L1_y'].values.astype(int)
+        num_stations = len(stations)
 
-        # 使用Xarray打开数据集（延迟加载）
-        with xr.open_dataset(l1_file_path, chunks={'x': 1000, 'y': 1000}) as ds:
-            # 选择需要的变量
-            vars_needed = [
-                'albedo_01', 'albedo_02', 'albedo_03',
-                'albedo_04', 'albedo_05', 'albedo_06',
-                'SAZ', 'SAA', 'SOZ', 'SOA'
+        # 使用内存映射打开大文件，减少内存占用
+        with nc.Dataset(l1_file_path, 'r', mmap=True) as dataset:
+            # 第一阶段：读取角度变量
+            soz = dataset.variables['SOZ'][h8l1_y, h8l1_x].astype(np.float32)
+            soz_rad = np.deg2rad(soz)
+            del soz  # 立即释放内存
+
+            # 计算cos(SOZ)并处理小值
+            cos_soz = np.cos(soz_rad)
+            del soz_rad  # 释放不再需要的数据
+            np.clip(cos_soz, 0.01, None, out=cos_soz)  # 原地操作避免复制
+
+            # 读取其他角度变量
+            saz = dataset.variables['SAZ'][h8l1_y, h8l1_x].astype(np.float32)
+            saa = dataset.variables['SAA'][h8l1_y, h8l1_x].astype(np.float32)
+            soa = dataset.variables['SOA'][h8l1_y, h8l1_x].astype(np.float32)
+
+            # 第二阶段：读取并校正反照率变量（分组处理）
+            albedo_vars = ['albedo_01', 'albedo_02', 'albedo_03',
+                           'albedo_04', 'albedo_05', 'albedo_06']
+            albedo_data = np.empty((num_stations, len(albedo_vars)), dtype=np.float32)
+
+            for i, var_name in enumerate(albedo_vars):
+                # 读取并校正反照率数据
+                albedo = dataset.variables[var_name][h8l1_y, h8l1_x].astype(np.float32)
+                albedo /= cos_soz  # 向量化校正
+                albedo_data[:, i] = albedo
+                del albedo  # 及时释放内存
+
+        # 第三阶段：创建输出文件并写入数据
+        with nc.Dataset(output_path, 'w', format='NETCDF4') as ds_out:
+            # 创建维度
+            ds_out.createDimension('Station', num_stations)
+
+            # 创建变量
+            station_var = ds_out.createVariable('Station', str, ('Station',))
+            albedo_vars_out = [
+                ds_out.createVariable(f'Albedo_{i + 1:02d}', 'f4', ('Station',))
+                for i in range(len(albedo_vars))
             ]
-            ds = ds[vars_needed]
+            saz_var = ds_out.createVariable('SAZ', 'f4', ('Station',))
+            saa_var = ds_out.createVariable('SAA', 'f4', ('Station',))
+            soz_var = ds_out.createVariable('SOZ', 'f4', ('Station',))
+            soa_var = ds_out.createVariable('SOA', 'f4', ('Station',))
 
-            # 提取所有站点的数据（向量化操作）
-            station_data = ds.isel(y=xr.DataArray(points[:, 0]),
-                                   x=xr.DataArray(points[:, 1]))
+            # 添加时间属性
+            ds_out.setncattr('time', os.path.basename(output_path).split('_')[2].split('.')[0])
 
-            # 计算校正因子（避免除零错误）
-            cos_soz = np.cos(np.deg2rad(station_data['SOZ']))
-            cos_soz = xr.where(cos_soz <= 0.01, 0.01, cos_soz)
+            # 写入数据
+            station_var[:] = np.array(stations, dtype='S')
 
-            # 校正反照率数据
-            for i in range(1, 7):
-                var_name = f'albedo_{i:02d}'
-                station_data[var_name] = station_data[var_name] / cos_soz
+            for i in range(len(albedo_vars)):
+                albedo_vars_out[i][:] = albedo_data[:, i]
 
-            # 重命名变量以匹配输出
-            station_data = station_data.rename({
-                'albedo_01': 'Albedo_01',
-                'albedo_02': 'Albedo_02',
-                'albedo_03': 'Albedo_03',
-                'albedo_04': 'Albedo_04',
-                'albedo_05': 'Albedo_05',
-                'albedo_06': 'Albedo_06'
-            })
-
-            # 添加站点名称
-            station_data['Station'] = xr.DataArray(
-                lookup_df['Station'].values,
-                dims=['Station']
-            )
-
-            # 设置时间属性
-            station_data.attrs['time'] = os.path.basename(output_path).split('_')[2].split('.')[0]
-
-            # 保存处理后的数据
-            station_data.to_netcdf(output_path)
+            saz_var[:] = saz
+            saa_var[:] = saa
+            soz_var[:] = np.arccos(cos_soz) * (180 / np.pi)  # 从cos值恢复角度
+            soa_var[:] = soa
 
         logger.info(f"成功处理并保存小文件: {output_path}")
         return True
