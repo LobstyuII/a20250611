@@ -156,116 +156,59 @@ def download_from_ftp(ftp_path, local_filename, download_dir):
 
 
 def process_l1_file_to_small_nc(l1_file_path, lookup_df, output_path):
-    """处理NetCDF文件并保存为小型数据集 - 优化内存版本"""
+    """使用Xarray+Dask优化内存处理"""
     try:
-        # 创建输出文件
-        with nc.Dataset(output_path, 'w', format='NETCDF4') as ds_out:
-            # 创建维度
-            ds_out.createDimension('Station', len(lookup_df))
+        # 读取坐标点
+        points = lookup_df[['H8L1_y', 'H8L1_x']].astype(int).values
 
-            # 创建变量
-            station_var = ds_out.createVariable('Station', str, ('Station',))
-            albedo_01_var = ds_out.createVariable('Albedo_01', 'f4', ('Station',))
-            albedo_02_var = ds_out.createVariable('Albedo_02', 'f4', ('Station',))
-            albedo_03_var = ds_out.createVariable('Albedo_03', 'f4', ('Station',))
-            albedo_04_var = ds_out.createVariable('Albedo_04', 'f4', ('Station',))
-            albedo_05_var = ds_out.createVariable('Albedo_05', 'f4', ('Station',))
-            albedo_06_var = ds_out.createVariable('Albedo_06', 'f4', ('Station',))
-            saz_var = ds_out.createVariable('SAZ', 'f4', ('Station',))
-            saa_var = ds_out.createVariable('SAA', 'f4', ('Station',))
-            soz_var = ds_out.createVariable('SOZ', 'f4', ('Station',))
-            soa_var = ds_out.createVariable('SOA', 'f4', ('Station',))
+        # 使用Xarray打开数据集（延迟加载）
+        with xr.open_dataset(l1_file_path, chunks={'x': 1000, 'y': 1000}) as ds:
+            # 选择需要的变量
+            vars_needed = [
+                'albedo_01', 'albedo_02', 'albedo_03',
+                'albedo_04', 'albedo_05', 'albedo_06',
+                'SAZ', 'SAA', 'SOZ', 'SOA'
+            ]
+            ds = ds[vars_needed]
 
-            # 添加时间属性
-            ds_out.setncattr('time', os.path.basename(output_path).split('_')[2].split('.')[0])
+            # 提取所有站点的数据（向量化操作）
+            station_data = ds.isel(y=xr.DataArray(points[:, 0]),
+                                   x=xr.DataArray(points[:, 1]))
 
-            # 打开输入文件
-            with nc.Dataset(l1_file_path, 'r') as dataset:
-                # 获取变量引用（不加载数据）
-                albedo_01_var_in = dataset.variables['albedo_01']
-                albedo_02_var_in = dataset.variables['albedo_02']
-                albedo_03_var_in = dataset.variables['albedo_03']
-                albedo_04_var_in = dataset.variables['albedo_04']
-                albedo_05_var_in = dataset.variables['albedo_05']
-                albedo_06_var_in = dataset.variables['albedo_06']
-                saz_var_in = dataset.variables['SAZ']
-                saa_var_in = dataset.variables['SAA']
-                soz_var_in = dataset.variables['SOZ']
-                soa_var_in = dataset.variables['SOA']
+            # 计算校正因子（避免除零错误）
+            cos_soz = np.cos(np.deg2rad(station_data['SOZ']))
+            cos_soz = xr.where(cos_soz <= 0.01, 0.01, cos_soz)
 
-                # 初始化列表
-                station_names = []
-                albedos_01 = []
-                albedos_02 = []
-                albedos_03 = []
-                albedos_04 = []
-                albedos_05 = []
-                albedos_06 = []
-                sazs = []
-                saas = []
-                sozs = []
-                soas = []
+            # 校正反照率数据
+            for i in range(1, 7):
+                var_name = f'albedo_{i:02d}'
+                station_data[var_name] = station_data[var_name] / cos_soz
 
-                # 遍历每个站点，提取数据
-                for _, row in lookup_df.iterrows():
-                    station_name = row['Station']
-                    h8l1_x = int(row['H8L1_x'])
-                    h8l1_y = int(row['H8L1_y'])
+            # 重命名变量以匹配输出
+            station_data = station_data.rename({
+                'albedo_01': 'Albedo_01',
+                'albedo_02': 'Albedo_02',
+                'albedo_03': 'Albedo_03',
+                'albedo_04': 'Albedo_04',
+                'albedo_05': 'Albedo_05',
+                'albedo_06': 'Albedo_06'
+            })
 
-                    # 直接读取单个点的SOZ值
-                    soz_val = soz_var_in[h8l1_y, h8l1_x]
-                    soz_rad = np.deg2rad(soz_val)
-                    cos_soz = np.cos(soz_rad)
+            # 添加站点名称
+            station_data['Station'] = xr.DataArray(
+                lookup_df['Station'].values,
+                dims=['Station']
+            )
 
-                    # 处理可能的除零错误
-                    if cos_soz <= 0.01:
-                        cos_soz = 0.01
+            # 设置时间属性
+            station_data.attrs['time'] = os.path.basename(output_path).split('_')[2].split('.')[0]
 
-                    # 直接读取单个点的反照率值并校正
-                    albedos = [
-                        albedo_01_var_in[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_02_var_in[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_03_var_in[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_04_var_in[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_05_var_in[h8l1_y, h8l1_x] / cos_soz,
-                        albedo_06_var_in[h8l1_y, h8l1_x] / cos_soz
-                    ]
-
-                    # 直接读取单个点的角度值
-                    angles = [
-                        saz_var_in[h8l1_y, h8l1_x],
-                        saa_var_in[h8l1_y, h8l1_x],
-                        soz_val,
-                        soa_var_in[h8l1_y, h8l1_x]
-                    ]
-
-                    station_names.append(station_name)
-                    albedos_01.append(albedos[0])
-                    albedos_02.append(albedos[1])
-                    albedos_03.append(albedos[2])
-                    albedos_04.append(albedos[3])
-                    albedos_05.append(albedos[4])
-                    albedos_06.append(albedos[5])
-                    sazs.append(angles[0])
-                    saas.append(angles[1])
-                    sozs.append(angles[2])
-                    soas.append(angles[3])
-
-            # 写入数据
-            station_var[:] = np.array(station_names, dtype='S')
-            albedo_01_var[:] = np.array(albedos_01, dtype=np.float32)
-            albedo_02_var[:] = np.array(albedos_02, dtype=np.float32)
-            albedo_03_var[:] = np.array(albedos_03, dtype=np.float32)
-            albedo_04_var[:] = np.array(albedos_04, dtype=np.float32)
-            albedo_05_var[:] = np.array(albedos_05, dtype=np.float32)
-            albedo_06_var[:] = np.array(albedos_06, dtype=np.float32)
-            saz_var[:] = np.array(sazs, dtype=np.float32)
-            saa_var[:] = np.array(saas, dtype=np.float32)
-            soz_var[:] = np.array(sozs, dtype=np.float32)
-            soa_var[:] = np.array(soas, dtype=np.float32)
+            # 保存处理后的数据
+            station_data.to_netcdf(output_path)
 
         logger.info(f"成功处理并保存小文件: {output_path}")
         return True
+
     except Exception as e:
         logger.error(f"处理文件失败: {e}")
         return False

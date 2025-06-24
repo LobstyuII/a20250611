@@ -1,26 +1,27 @@
 import os
 import time
+import pandas as pd
 import netCDF4 as nc
 import numpy as np
-import pandas as pd
 from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from Py6S import *
 
-# 配置路径 - 请根据实际文件位置修改
+# 配置路径
 PATHS = {
-    "h8_l1": "D:/H8_data/h8l1/",  # H8 L1 TOA数据目录
-    "h8_l2arp": "D:/H8_data/h8l2arp/",  # H8 L2 ARP AOD数据目录
-    "mcd12q1": "data/mcd12q1/",  # MCD12Q1 LC数据目录
-    "mod08": "data/poi_mod08/",  # MOD08大气数据目录
-    "output": "output/poi_6s_nc/",  # 输出目录
-    "stations": "Air_stations_lon_lat.csv"  # 站点坐标文件
+    "h8_l1": "D:/H8_data/h8l1/",
+    "h8_l2arp": "D:/H8_data/h8l2arp/",
+    "merra2": "D:/H8_data/MERRA2interp/",
+    "lucc": "D:/H8_data/LC_2015_2024.nc",
+    "output": "D:/H8_Data/H8SR/",
+    "stations": "Air_stations_lon_lat.csv"
 }
 
 # 波段参数
 BAND_WAVELENGTHS = [0.47, 0.51, 0.64, 0.86, 1.6, 2.3]
 BAND_NAMES = [f"Albedo_0{i + 1}" for i in range(1, 7)]
 SR_BAND_NAMES = [f"SR_0{i + 1}" for i in range(1, 7)]
+ANGLE_NAMES = ['SAZ', 'SAA', 'SOZ', 'SOA']
 
 # 日期范围
 START_DATE = datetime(2015, 7, 11)
@@ -28,29 +29,28 @@ END_DATE = datetime(2021, 12, 31)
 
 # LUCC到BRDF参数的映射
 LUCC_TO_BRDF = {
-    1: {"model": "Rahman", "intensity": 0.3, "asymmetry": 0.1, "structural": 0.5},  # 常绿针叶林
-    2: {"model": "Rahman", "intensity": 0.35, "asymmetry": 0.12, "structural": 0.55},  # 常绿阔叶林
-    3: {"model": "Rahman", "intensity": 0.25, "asymmetry": 0.08, "structural": 0.45},  # 落叶针叶林
-    4: {"model": "Rahman", "intensity": 0.3, "asymmetry": 0.1, "structural": 0.5},  # 落叶阔叶林
-    5: {"model": "Rahman", "intensity": 0.2, "asymmetry": 0.05, "structural": 0.4},  # 混交林
-    6: {"model": "Rahman", "intensity": 0.4, "asymmetry": 0.15, "structural": 0.6},  # 稠密灌丛
-    7: {"model": "Rahman", "intensity": 0.35, "asymmetry": 0.12, "structural": 0.55},  # 稀疏灌丛
-    8: {"model": "Walthall", "param1": 0.5, "param2": 0.2, "param3": 0.1, "albedo": 0.25},  # 稀树草原
-    9: {"model": "Walthall", "param1": 0.4, "param2": 0.15, "param3": 0.05, "albedo": 0.3},  # 草地
-    10: {"model": "Lambertian", "albedo": 0.35},  # 永久湿地
-    11: {"model": "Lambertian", "albedo": 0.1},  # 农田
-    12: {"model": "Lambertian", "albedo": 0.4},  # 城市建筑
-    13: {"model": "Walthall", "param1": 0.6, "param2": 0.25, "param3": 0.15, "albedo": 0.35},  # 农田/自然植被
-    14: {"model": "Lambertian", "albedo": 0.7},  # 冰雪
-    15: {"model": "Lambertian", "albedo": 0.05},  # 裸地
-    16: {"model": "Lambertian", "albedo": 0.02},  # 水体
-    17: {"model": "Lambertian", "albedo": 0.02},  # 水体
-    255: {"model": "Lambertian", "albedo": 0.2}  # 默认
+    1: {"model": "Rahman", "intensity": 0.3, "asymmetry": 0.1, "structural": 0.5},
+    2: {"model": "Rahman", "intensity": 0.35, "asymmetry": 0.12, "structural": 0.55},
+    3: {"model": "Rahman", "intensity": 0.25, "asymmetry": 0.08, "structural": 0.45},
+    4: {"model": "Rahman", "intensity": 0.3, "asymmetry": 0.1, "structural": 0.5},
+    5: {"model": "Rahman", "intensity": 0.2, "asymmetry": 0.05, "structural": 0.4},
+    6: {"model": "Rahman", "intensity": 0.4, "asymmetry": 0.15, "structural": 0.6},
+    7: {"model": "Rahman", "intensity": 0.35, "asymmetry": 0.12, "structural": 0.55},
+    8: {"model": "Walthall", "param1": 0.5, "param2": 0.2, "param3": 0.1, "albedo": 0.25},
+    9: {"model": "Walthall", "param1": 0.4, "param2": 0.15, "param3": 0.05, "albedo": 0.3},
+    10: {"model": "Lambertian", "albedo": 0.35},
+    11: {"model": "Lambertian", "albedo": 0.1},
+    12: {"model": "Lambertian", "albedo": 0.4},
+    13: {"model": "Walthall", "param1": 0.6, "param2": 0.25, "param3": 0.15, "albedo": 0.35},
+    14: {"model": "Lambertian", "albedo": 0.7},
+    15: {"model": "Lambertian", "albedo": 0.05},
+    16: {"model": "Lambertian", "albedo": 0.02},
+    17: {"model": "Lambertian", "albedo": 0.02},
+    255: {"model": "Lambertian", "albedo": 0.2}
 }
 
 
 def get_current_timestamp():
-    """获取当前时间戳"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -63,12 +63,11 @@ def load_netcdf_data(file_path, variables):
         with nc.Dataset(file_path) as ds:
             data = {}
             for var in variables:
-                # 处理字符串变量
                 if var == 'Station':
                     station_data = ds.variables[var][:]
-                    if station_data.dtype == 'S1':  # 字符数组
+                    if station_data.dtype == 'S1':
                         data[var] = [''.join(station).strip().decode('utf-8') for station in station_data]
-                    else:  # 假设已经是字符串数组
+                    else:
                         data[var] = [str(station).strip() for station in station_data]
                 else:
                     data[var] = ds.variables[var][:]
@@ -95,34 +94,46 @@ def set_brdf_model(s, lucc_value):
             param3=brdf_params["param3"],
             albedo=brdf_params["albedo"]
         )
-    else:  # Lambertian
+    else:
         s.ground_reflectance = GroundReflectance.HomogeneousLambertian(brdf_params["albedo"])
-
     return s
 
 
-def process_timepoint(date, time_str, stations_list, mod08_data, lucc_data):
-    """处理单个时间点的数据"""
+def calculate_general_availability(l2arp_data, idx):
+    """计算综合可用性标志"""
+    if (l2arp_data['Data_Availability'][idx] != 1 or
+            l2arp_data['Cloud_Flag'][idx] != 0 or
+            l2arp_data['Land_Water_Flag'][idx] == 0):
+        return 1  # 不可用
+    return 0  # 可用
+
+
+def process_timepoint(date, time_str, stations_list, lucc_dict, merra2_data):
     date_str = date.strftime("%Y%m%d")
-    time_dir = time_str[:2]  # 小时部分作为目录名
+    time_dir = time_str[:2]
 
     # 构建文件路径
     l1_file = os.path.join(PATHS["h8_l1"], date_str, time_dir, f"H8_{date_str}_{time_str}.nc")
     l2arp_file = os.path.join(PATHS["h8_l2arp"], date_str[:4], date_str[4:6], f"H8L2ARP_{date_str}_{time_str}.nc")
+    merra2_file = os.path.join(PATHS["merra2"], f"MERRA2_{date_str}_{time_str}.nc")
     output_file = os.path.join(PATHS["output"], f"SR_{date_str}_{time_str}.nc")
 
-    # 检查输入文件是否存在
-    if not os.path.exists(l1_file) or not os.path.exists(l2arp_file):
+    # 检查输入文件
+    missing_files = []
+    if not os.path.exists(l1_file): missing_files.append(l1_file)
+    if not os.path.exists(l2arp_file): missing_files.append(l2arp_file)
+    if not os.path.exists(merra2_file): missing_files.append(merra2_file)
+
+    if missing_files:
+        print(f"[{get_current_timestamp()}] Missing files for {date_str}_{time_str}: {', '.join(missing_files)}")
         return None
 
-    # 加载L1 TOA数据
-    l1_data = load_netcdf_data(l1_file, ['Station'] + BAND_NAMES + ['SAZ', 'SAA', 'SOZ', 'SOA'])
-    if l1_data is None:
-        return None
+    # 加载数据
+    l1_data = load_netcdf_data(l1_file, ['Station'] + BAND_NAMES + ANGLE_NAMES)
+    l2arp_data = load_netcdf_data(l2arp_file, ['Station', 'Data_Availability', 'Cloud_Flag', 'Land_Water_Flag', 'AOT'])
+    merra2_data = load_netcdf_data(merra2_file, ['Station', 'TO3', 'TQV'])
 
-    # 加载L2ARP数据
-    l2arp_data = load_netcdf_data(l2arp_file, ['Station', 'Data_Availability', 'Cloud_Flag', 'AOT'])
-    if l2arp_data is None:
+    if None in [l1_data, l2arp_data, merra2_data]:
         return None
 
     # 创建站点索引映射
@@ -133,23 +144,26 @@ def process_timepoint(date, time_str, stations_list, mod08_data, lucc_data):
     # 初始化结果数组
     num_stations = len(stations_list)
     sr_results = np.full((num_stations, len(BAND_WAVELENGTHS)), np.nan, dtype=np.float32)
-    valid_flags = np.zeros(num_stations, dtype=bool)
+    gen_avail = np.full(num_stations, -1, dtype=np.int8)
+    valid_flags = np.zeros(num_stations, dtype=np.int8)
 
     # 处理每个站点
     for station_idx, station in enumerate(stations_list):
-        # 检查L2ARP数据是否可用
         if station not in station_idx_map:
             continue
 
         idx = station_idx_map[station]
 
-        # 应用L2ARP云和可用性过滤
-        if (l2arp_data['Data_Availability'][idx] != 1 or
-                l2arp_data['Cloud_Flag'][idx] != 0):
-            continue
+        # 计算综合可用性
+        gen_avail[station_idx] = calculate_general_availability(l2arp_data, idx)
 
-        # 获取AOD
+        if gen_avail[station_idx] == 1:
+            continue  # 不可用数据，跳过处理
+
+        # 获取大气参数
         aot = l2arp_data['AOT'][idx]
+        to3 = merra2_data['TO3'][idx]
+        tqv = merra2_data['TQV'][idx]
 
         # 获取TOA反射率和角度
         toa_reflectances = [l1_data[band][idx] for band in BAND_NAMES]
@@ -158,15 +172,8 @@ def process_timepoint(date, time_str, stations_list, mod08_data, lucc_data):
         soz = l1_data['SOZ'][idx]
         soa = l1_data['SOA'][idx]
 
-        # 获取水汽和臭氧
-        water_vapor, ozone = -1, -1
-        if mod08_data is not None and station in mod08_data:
-            water_vapor, ozone = mod08_data[station]
-
         # 获取LUCC类型
-        lucc_value = 255  # 默认值
-        if lucc_data is not None and station in lucc_data:
-            lucc_value = lucc_data[station]
+        lucc_value = lucc_dict.get(station, 255)
 
         # 执行6S大气校正+BRDF归一化
         try:
@@ -179,16 +186,10 @@ def process_timepoint(date, time_str, stations_list, mod08_data, lucc_data):
             s.geometry.view_a = saa
 
             # 设置大气参数
-            if water_vapor > 0 and ozone > 0:
-                s.atmos_profile = AtmosProfile.UserWaterAndOzone(water=water_vapor, ozone=ozone)
-            else:
-                s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.MidlatitudeSummer)
+            s.atmos_profile = AtmosProfile.UserWaterAndOzone(water=tqv, ozone=to3)
 
             # 设置气溶胶参数
-            if aot > 0:
-                s.aot550 = aot * 0.98  # 500nm转换为550nm近似值
-            else:
-                s.aero_profile = AeroProfile.PredefinedType(AeroProfile.Continental)
+            s.aot550 = aot * 0.98  # 500nm转换为550nm近似值
 
             # 设置BRDF模型
             s = set_brdf_model(s, lucc_value)
@@ -200,7 +201,7 @@ def process_timepoint(date, time_str, stations_list, mod08_data, lucc_data):
                 s.run()
                 sr_results[station_idx, band_idx] = s.outputs.surface_reflectance
 
-            valid_flags[station_idx] = True
+            valid_flags[station_idx] = 1
         except Exception as e:
             print(f"[{get_current_timestamp()}] Error processing station {station} at {date_str}_{time_str}: {str(e)}")
 
@@ -215,80 +216,73 @@ def process_timepoint(date, time_str, stations_list, mod08_data, lucc_data):
             station_var = ds.createVariable('station', str, ('station',))
             station_var[:] = np.array(stations_list, dtype='S20')
 
+            gen_avail_var = ds.createVariable('General_availability', np.int8, ('station',))
+            gen_avail_var.long_name = 'Data availability flag (0=clear land available, 1=other)'
+            gen_avail_var[:] = gen_avail
+
             sr_var = ds.createVariable('surface_reflectance', np.float32, ('station', 'band'))
             sr_var.units = '1'
             sr_var.long_name = 'Surface Reflectance after 6S+BRDF correction'
             sr_var[:] = sr_results
 
             valid_var = ds.createVariable('valid_flag', np.int8, ('station',))
-            valid_var.long_name = 'Data validity flag (1=valid, 0=invalid)'
-            valid_var[:] = valid_flags.astype(np.int8)
+            valid_var.long_name = 'Processing validity flag (1=success, 0=fail)'
+            valid_var[:] = valid_flags
 
             # 添加全局属性
             ds.date_created = get_current_timestamp()
-            ds.source = 'Himawari-8 L1 TOA and L2ARP data processed with Py6S'
+            ds.title = 'Himawari-8 Surface Reflectance Product'
+            ds.source = 'Himawari-8 L1 TOA, L2ARP, MERRA-2, and MCD12Q1 data'
+            ds.author = 'Atmospheric Correction Processor v2.0'
             ds.time = time_str
             ds.date = date_str
 
+        print(f"[{get_current_timestamp()}] Generated SR product: {output_file}")
         return output_file
     except Exception as e:
         print(f"[{get_current_timestamp()}] Error saving {output_file}: {str(e)}")
         return None
 
 
-def process_date(date, stations_list, mod08_data, lucc_data):
-    """处理单个日期的所有时间点"""
+def load_lucc_data():
+    """加载LUCC数据到内存"""
+    lucc_file = PATHS["lucc"]
+    if not os.path.exists(lucc_file):
+        print(f"[{get_current_timestamp()}] LUCC file not found: {lucc_file}")
+        return None
+
+    try:
+        with nc.Dataset(lucc_file) as ds:
+            stations = [''.join(s).strip() for s in ds.variables['Station'][:]]
+            # 使用最新年份的数据
+            year_idx = -1  # 最后一个时间索引（最新年份）
+            lucc_values = ds.variables['LC_type1'][year_idx, :]
+            return dict(zip(stations, lucc_values))
+    except Exception as e:
+        print(f"[{get_current_timestamp()}] Error loading LUCC data: {str(e)}")
+        return None
+
+
+def process_date(date, stations_list, lucc_dict):
     date_str = date.strftime("%Y%m%d")
     print(f"[{get_current_timestamp()}] Processing date: {date_str}")
 
-    # 生成该日期所有时间点 (00:00 到 23:50, 10分钟间隔)
+    # 生成该日期所有时间点
     time_points = [f"{hour:02d}{minute:02d}"
                    for hour in range(24)
                    for minute in range(0, 60, 10)]
 
     processed_files = []
-
     for time_str in time_points:
-        output_file = process_timepoint(date, time_str, stations_list, mod08_data, lucc_data)
+        merra2_data = None  # 每个时间点单独加载MERRA2数据
+        output_file = process_timepoint(date, time_str, stations_list, lucc_dict, merra2_data)
         if output_file:
             processed_files.append(output_file)
 
     return processed_files
 
 
-def load_mod08_data(date):
-    """加载MOD08数据"""
-    date_str = date.strftime("%Y%m%d")
-    file_path = os.path.join(PATHS["mod08"], f"poi_mod08_{date_str}.csv")
-
-    if not os.path.exists(file_path):
-        return None
-
-    try:
-        df = pd.read_csv(file_path)
-        return {row['Station']: (row['Water_Vapor'], row['Ozone']) for _, row in df.iterrows()}
-    except Exception as e:
-        print(f"[{get_current_timestamp()}] Error loading MOD08 data: {str(e)}")
-        return None
-
-
-def load_lucc_data(year):
-    """加载LUCC数据"""
-    file_path = os.path.join(PATHS["mcd12q1"], f"lucc_{year}.csv")
-
-    if not os.path.exists(file_path):
-        return None
-
-    try:
-        df = pd.read_csv(file_path)
-        return {row['Station']: row['LUCC_value'] for _, row in df.iterrows()}
-    except Exception as e:
-        print(f"[{get_current_timestamp()}] Error loading LUCC data: {str(e)}")
-        return None
-
-
 def main():
-    """主处理函数"""
     start_time = time.time()
 
     # 创建输出目录
@@ -300,6 +294,12 @@ def main():
     num_stations = len(stations_list)
     print(f"[{get_current_timestamp()}] Loaded {num_stations} stations")
 
+    # 加载LUCC数据到内存
+    lucc_dict = load_lucc_data()
+    if lucc_dict is None:
+        print(f"[{get_current_timestamp()}] Failed to load LUCC data. Exiting.")
+        return
+
     # 生成日期列表
     date_list = []
     current_date = START_DATE
@@ -310,17 +310,8 @@ def main():
     print(f"[{get_current_timestamp()}] Processing {len(date_list)} days from {START_DATE} to {END_DATE}")
 
     # 多进程处理
-    with ProcessPoolExecutor(max_workers=8) as executor:
-        futures = []
-
-        for date in date_list:
-            # 加载该日期所需的数据
-            mod08_data = load_mod08_data(date)
-            lucc_data = load_lucc_data(date.year)
-
-            futures.append(
-                executor.submit(process_date, date, stations_list, mod08_data, lucc_data)
-            )
+    with ProcessPoolExecutor(max_workers=6) as executor:
+        futures = [executor.submit(process_date, date, stations_list, lucc_dict) for date in date_list]
 
         total_processed = 0
         for future in as_completed(futures):

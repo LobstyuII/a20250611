@@ -21,8 +21,8 @@ logging.basicConfig(
 
 
 def GEE_authorizing():
-    service_account = "your-service-account@your-project.iam.gserviceaccount.com"  # 替换为您的服务账号
-    credentials_path = 'your-credentials.json'  # 替换为您的凭证文件路径
+    service_account = "lobstyu@premium-cipher-424203-d0.iam.gserviceaccount.com"
+    credentials_path = 'premium-cipher-424203-d0-c6894a29d00c.json'
     try:
         credentials = ee.ServiceAccountCredentials(service_account, credentials_path)
         ee.Initialize(credentials)
@@ -78,7 +78,7 @@ def get_feature_collection(stations, lats, lons):
         raise
 
 
-def save_hourly_merra_data(dt, to3_data, stations, lats, lons, base_path):
+def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_path):
     """保存单小时MERRA-2数据到单独的NC文件"""
     try:
         if isinstance(dt, np.datetime64):
@@ -90,14 +90,22 @@ def save_hourly_merra_data(dt, to3_data, stations, lats, lons, base_path):
         dir_path = os.path.join(base_path, "MERRA2", year, month)
         os.makedirs(dir_path, exist_ok=True)
 
-        # 文件命名格式为hhmm
-        filename = f"MERRA2_{dt.strftime('%Y%m%d_%H%M')}.nc"
+        # 文件命名格式为hhmm，包含TO3和TQV
+        filename = f"MERRA2_{dt.strftime('%Y%m%d_%H%M')}_TO3_TQV.nc"
         file_path = os.path.join(dir_path, filename)
 
-        # 检查文件是否已存在
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 1024:
+        # 检查文件是否已存在且完整
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 2048:
             logging.info(f"文件已存在: {filename}")
             return True
+
+        # 新增：删除可能已损坏的现有文件
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logging.warning(f"删除不完整文件: {filename}")
+            except Exception as e:
+                logging.error(f"删除文件失败: {e}")
 
         # 创建新的NC文件
         with nc.Dataset(file_path, 'w', format='NETCDF4') as ds:
@@ -105,31 +113,54 @@ def save_hourly_merra_data(dt, to3_data, stations, lats, lons, base_path):
             ds.createDimension('Station', len(stations))
             ds.createDimension('time', 1)
 
+            # 计算最大字符串长度
+            max_str_len = max(len(str(s)) for s in stations) + 1  # +1 for safety
+
             # 定义变量
             time_var = ds.createVariable('time', 'f8', ('time',))
-            station_var = ds.createVariable('Station', str, ('Station',))
+            # 修复字符串变量创建
+            station_var = ds.createVariable('Station', f'S{max_str_len}', ('Station',))
             lat_var = ds.createVariable('Lat', 'f4', ('Station',))
             lon_var = ds.createVariable('Lon', 'f4', ('Station',))
             to3_var = ds.createVariable('TO3', 'f4', ('time', 'Station'), fill_value=-9999.0)
+            tqv_var = ds.createVariable('TQV', 'f4', ('time', 'Station'), fill_value=-9999.0)
 
             # 设置时间属性
-            time_var.units = 'hours since 1980-01-01 00:00:00'  # MERRA-2起始时间
+            time_var.units = 'hours since 1980-01-01 00:00:00'
             time_var.calendar = 'standard'
+
+            # 设置变量属性
+            to3_var.long_name = 'Total Ozone Column'
+            to3_var.units = 'Dobson Units'
+            tqv_var.long_name = 'Total Precipitable Water Vapor'
+            tqv_var.units = 'kg/m^2'
 
             # 写入数据
             time_var[:] = nc.date2num(dt, time_var.units, time_var.calendar)
-            station_var[:] = np.array(stations, dtype=object)
+
+            # 修复字符串写入
+            station_arr = np.array([np.string_(str(s)) for s in stations], dtype=f'S{max_str_len}')
+            station_var[:] = station_arr
+
             lat_var[:] = lats
             lon_var[:] = lons
             to3_var[0, :] = to3_data
+            tqv_var[0, :] = tqv_data
 
-        logging.info(f"成功保存: {filename}")
         return True
     except Exception as e:
         logging.error(f"保存 {dt} 数据失败: {e}")
         traceback.print_exc()
-        return False
 
+        # 尝试删除可能不完整的文件
+        if 'file_path' in locals() and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logging.info(f"已删除不完整文件: {file_path}")
+            except:
+                pass
+
+        return False
 
 def process_hourly_merra_data(dt, collection, poi_fc, stations, lats, lons, base_path, max_retries=5):
     """处理单小时MERRA-2数据并保存（带重试机制）"""
@@ -150,8 +181,8 @@ def process_hourly_merra_data(dt, collection, poi_fc, stations, lats, lons, base
                 logging.warning(f"{start_dt} 没有数据")
                 return False
 
-            # 选择TO3波段
-            image = image.select('TO3')
+            # 选择TO3和TQV波段
+            image = image.select(['TO3', 'TQV'])
 
             # 采样POI
             sampled = image.sampleRegions(
@@ -167,27 +198,33 @@ def process_hourly_merra_data(dt, collection, poi_fc, stations, lats, lons, base
                 logging.warning(f"{start_dt} 没有采样结果")
                 return False
 
-            # 提取TO3数据
+            # 提取TO3和TQV数据
             to3_data = []
+            tqv_data = []
             station_ids = []
 
             for feature in sampled_dict['features']:
                 props = feature['properties']
                 station_ids.append(props['Station'])
-                value = props.get('TO3', -9999.0)
-                to3_data.append(value)
+                to3_value = props.get('TO3', -9999.0)
+                tqv_value = props.get('TQV', -9999.0)
+                to3_data.append(to3_value)
+                tqv_data.append(tqv_value)
 
             # 按原始站点顺序排序
             sorted_to3 = []
+            sorted_tqv = []
             for station in stations:
                 if station in station_ids:
                     idx = station_ids.index(station)
                     sorted_to3.append(to3_data[idx])
+                    sorted_tqv.append(tqv_data[idx])
                 else:
                     sorted_to3.append(-9999.0)
+                    sorted_tqv.append(-9999.0)
 
             # 保存数据
-            return save_hourly_merra_data(dt, sorted_to3, stations, lats, lons, base_path)
+            return save_hourly_merra_data(dt, sorted_to3, sorted_tqv, stations, lats, lons, base_path)
 
         except ee.EEException as e:
             retry_count += 1
@@ -208,7 +245,7 @@ def main():
     GEE_authorizing()
 
     # 数据路径
-    data_path = "D:/MERRA2_data"  # 修改为您的数据存储路径
+    data_path = "D:/H8_data"  # 修改为您的数据存储路径
     luts_path = os.path.join(data_path, "LUTs.nc")
 
     # 读取LUTs.nc文件
@@ -232,11 +269,11 @@ def main():
 
         year = py_dt.strftime("%Y")
         month = py_dt.strftime("%m")
-        filename = f"MERRA2_{py_dt.strftime('%Y%m%d_%H%M')}.nc"
+        filename = f"MERRA2_{py_dt.strftime('%Y%m%d_%H%M')}_TO3_TQV.nc"  # 更新文件名格式
         file_path = os.path.join(data_path, "MERRA2", year, month, filename)
 
         # 检查文件是否需要下载
-        if not os.path.exists(file_path) or os.path.getsize(file_path) <= 1024:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) <= 2048:  # 增大文件大小检查阈值
             tasks.append(dt)
 
     logging.info(f"总时间点: {len(hourly_times)}, 已存在: {len(hourly_times) - len(tasks)}, 待处理: {len(tasks)}")
@@ -247,7 +284,7 @@ def main():
     total_tasks = len(tasks)
 
     # 设置并行线程数（建议4-8个）
-    max_workers = 6
+    max_workers = 4
 
     with tqdm(total=total_tasks, desc="下载MERRA-2数据") as pbar:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -280,7 +317,7 @@ def merge_merra_data(base_path, output_path):
 
         for root, dirs, files in os.walk(merra_dir):
             for file in files:
-                if file.endswith(".nc") and file.startswith("MERRA2_"):
+                if file.endswith(".nc") and file.startswith("MERRA2_") and "TO3_TQV" in file:
                     all_files.append(os.path.join(root, file))
 
         if not all_files:
@@ -314,7 +351,6 @@ def merge_merra_data(base_path, output_path):
         except Exception as e:
             logging.error(f"验证输出文件失败: {e}")
 
-
     except Exception as e:
         logging.error(f"合并数据失败: {e}")
         traceback.print_exc()
@@ -326,5 +362,5 @@ if __name__ == "__main__":
 
     # 第二步：合并数据（在下载完成后运行）
     # data_path = "D:/MERRA2_data"
-    # output_nc = os.path.join(data_path, "MERRA2_TO3_combined.nc")
+    # output_nc = os.path.join(data_path, "MERRA2_TO3_TQV_combined.nc")
     # merge_merra_data(data_path, output_nc)

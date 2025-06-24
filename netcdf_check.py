@@ -100,7 +100,7 @@ def print_nc_file_details(file_path):
 
 if __name__ == "__main__":
     # 指定要查看的文件路径
-    file_path = r"D:\H8_data\H8L2PAR\2015\07\H8L2PAR_20150707_0020.nc"
+    file_path = r"D:\H8_data\MERRA2\2015\07\MERRA2_20150707_0700_TO3_TQV.nc"
 
     # 打印文件详细信息
     print_nc_file_details(file_path)

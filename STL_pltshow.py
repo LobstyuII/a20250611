@@ -1,5 +1,5 @@
 # 看MSTL后的数据图像
-# python STL_pltshow.py D:/H8_Data/Decomposition/Albedo_01/decomposed_H8_monthly_201508.nc
+# python STL_pltshow.py D:/H8_Data/Decomposition/Albedo_04/decomposed_H8_monthly_201508.nc
 
 import xarray as xr
 import matplotlib.pyplot as plt

@@ -198,7 +198,7 @@ def main():
     NC_PATH = "D:\\H8_data\\H8L1\\2015\\08\\H8_monthly_201508.nc"
     STATIONS = ["1001A", "1002A", "1003A"]
     TIME_RANGE = ("2015-08-01", "2015-08-30")
-    VAR_NAME = "Albedo_01"
+    VAR_NAME = "Albedo_04"
 
     logger.info(f"开始处理: {NC_PATH}")
     logger.info(f"目标站点: {STATIONS}")
