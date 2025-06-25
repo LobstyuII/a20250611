@@ -1,5 +1,4 @@
 # 20250611 建立Dataset, 也可以直传LUTs.nc
-# prerequisition.txt
 #
 import numpy as np
 import pandas as pd

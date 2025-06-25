@@ -1,4 +1,11 @@
 conda create -n a20250611
 conda activate a20250611
-conda install -c conda-forge pandas xarray dask zarr netCDF4 tqdm earthengine-api py6s scipy statsmodels matplotlib py6s
-# conda install -c conda-forge py6s
+conda install -c conda-forge pandas xarray dask zarr netCDF4 tqdm earthengine-api py6s scipy statsmodels matplotlib
+# conda install -c conda-forge h5py paramiko
+
+
+# conda install -c conda-forge paramiko
+
+
+
+
