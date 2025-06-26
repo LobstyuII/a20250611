@@ -378,7 +378,7 @@ def main():
     # 设置日期范围和时间 - 修正为从2015年7月7日开始
     start_date = datetime.date(2017, 1, 1)
     end_date = datetime.date(2018, 12, 31)
-    hours = list(range(0, 23))  # 00:00 - 22:00 UTC
+    hours = list(range(0, 24))
     minutes = [0, 10, 20, 30, 40, 50]
 
     # 创建H8L1基础目录

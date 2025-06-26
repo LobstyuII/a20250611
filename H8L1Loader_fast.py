@@ -378,7 +378,7 @@ def main():
     # 设置日期范围和时间 - 修正为从2015年7月7日开始
     start_date = datetime.date(2016, 10, 28)
     end_date = datetime.date(2016, 12, 31)
-    hours = list(range(0, 23))  # 00:00 - 22:00 UTC
+    hours = list(range(0, 24))
     minutes = [0, 10, 20, 30, 40, 50]
 
     # 创建H8L1基础目录
@@ -428,7 +428,7 @@ def main():
                     logger.error(f"任务执行失败: {e}")
 
         # 整合月度数据
-        integrate_monthly_data(month_dir, year, month)
+        # integrate_monthly_data(month_dir, year, month)
 
         # 移动到下个月
         if month == 12:
