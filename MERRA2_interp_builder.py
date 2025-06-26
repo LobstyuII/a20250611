@@ -128,7 +128,7 @@ class MERRA2Interpolator:
 
     def generate_time_points(self):
         """生成10分钟间隔的时间点"""
-        # 默认时间范围 (2010-2021)
+        # 默认时间范围 (2015-2021)
         start = datetime(2015, 7, 7) if not self.start_date else datetime.strptime(self.start_date, "%Y%m%d")
         end = datetime(2021, 12, 31, 23, 50) if not self.end_date else datetime.strptime(self.end_date,
                                                                                          "%Y%m%d") + timedelta(
