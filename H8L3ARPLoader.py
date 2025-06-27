@@ -431,8 +431,8 @@ def main():
         logger.info("创建新的缺失文件记录")
 
     # 设置日期范围和时间（扩展到2023年）
-    start_date = datetime.date(2015, 7, 1)
-    end_date = datetime.date(2023, 12, 31)  # 扩展结束日期到2023年底
+    start_date = datetime.date(2016, 3, 1)
+    end_date = datetime.date(2021, 12, 31)  # 扩展结束日期到2023年底
     hours = list(range(0, 24))  # 小时分辨率
 
     # 按月份处理
@@ -462,7 +462,7 @@ def main():
 
         # 使用线程池并行下载和处理
         futures = []
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=25) as executor:
             for date, hour in tasks:
                 future = executor.submit(
                     download_and_process, date, hour, lookup_df, Data_path
