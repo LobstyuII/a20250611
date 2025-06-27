@@ -433,7 +433,7 @@ def main():
     # 设置日期范围和时间（扩展到2023年）
     start_date = datetime.date(2016, 3, 1)
     end_date = datetime.date(2021, 12, 31)  # 扩展结束日期到2023年底
-    hours = list(range(0, 24))  # 小时分辨率
+    hours = list(range(0, 13) + range(21, 23))  # 小时分辨率
 
     # 按月份处理
     current_date = start_date

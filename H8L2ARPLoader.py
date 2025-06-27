@@ -39,7 +39,7 @@ console_handler.addFilter(NotWarningFilter())  # 过滤掉warning级别的日志
 logger.addHandler(console_handler)
 
 # FTP密钥文件
-CONFIG_FILE = "ftp_config#2.json"
+CONFIG_FILE = "ftp_config#1.json"
 
 
 def load_ftp_config():
@@ -419,7 +419,7 @@ def main():
     # 设置日期范围和时间
     start_date = datetime.date(2015, 7, 1)
     end_date = datetime.date(2021, 12, 31)
-    hours = list(range(0, 24))
+    hours = [*range(0, 13), *range(21, 23)]
     minutes = [0, 10, 20, 30, 40, 50]
 
     # 按月份处理

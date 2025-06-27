@@ -445,7 +445,7 @@ def main():
     # 设置日期范围和时间
     start_date = datetime.date(2015, 7, 7)  # 从2015年7月7日开始
     end_date = datetime.date(2018, 12, 31)
-    hours = list(range(0, 24))
+    hours = list(range(0, 13) + range(21, 23))
     minutes = [0, 10, 20, 30, 40, 50]  # 每10分钟一次观测
 
     # 按月份处理
