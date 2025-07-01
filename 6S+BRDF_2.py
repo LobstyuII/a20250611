@@ -5,6 +5,8 @@ import numpy as np
 from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from Py6S import *
+import joblib
+from functools import lru_cache
 
 # 更新路径配置
 PATHS = {
@@ -48,6 +50,14 @@ LUCC_TO_BRDF = {
     16: {"model": "Lambertian", "albedo": 0.02},
     17: {"model": "Lambertian", "albedo": 0.02},
     255: {"model": "Lambertian", "albedo": 0.2}
+}
+
+# 内存缓存
+MEMORY_CACHE = {
+    "lucc_dict": None,
+    "station_coords": None,
+    "stations_list": None,
+    "date_data_cache": {}
 }
 
 
@@ -137,109 +147,120 @@ def convert_aot500_to_aot550(aot500, angstrom_exponent=1.3):
     return aot500 * (500 / 550) ** angstrom_exponent
 
 
-def process_station(station_data):
-    """处理单个站点的数据"""
-    station, idx, hourly_data, merra2_data, aod_data, lucc_dict, station_coords, date = station_data
-    lat, lon = station_coords.get(station, (np.nan, np.nan))
+def process_station_batch(station_data_batch):
+    """批量处理站点数据"""
+    results = []
+    # 创建单个SixS对象用于整个批次
+    s_base = SixS()
 
-    # 计算综合可用性
-    hourly_avail = hourly_data['hourly_availability'][idx]
-    gen_avail = calculate_general_availability(hourly_avail)
+    for station_data in station_data_batch:
+        station, idx, hourly_data, merra2_data, aod_data, lucc_dict, station_coords, date = station_data
+        lat, lon = station_coords.get(station, (np.nan, np.nan))
 
-    if gen_avail == 1:
-        return station, gen_avail, np.full(len(BAND_WAVELENGTHS), np.nan), 0
+        # 计算综合可用性
+        hourly_avail = hourly_data['hourly_availability'][idx]
+        gen_avail = calculate_general_availability(hourly_avail)
 
-    # 获取大气参数并转换单位
-    to3 = merra2_data['TO3'][idx] if 'TO3' in merra2_data and idx < len(merra2_data['TO3']) else np.nan
-    tqv = merra2_data['TQV'][idx] if 'TQV' in merra2_data and idx < len(merra2_data['TQV']) else np.nan
-    ozone_cmatm, water_gcm2 = convert_merra2_units(to3, tqv)
+        if gen_avail == 1:
+            results.append((station, gen_avail, np.full(len(BAND_WAVELENGTHS), np.nan), 0))
+            continue
 
-    # 获取AOD数据
-    aot500 = aod_data['AOT'][idx] if 'AOT' in aod_data and idx < len(aod_data['AOT']) else np.nan
-    data_avail = aod_data['Data_Availability'][idx] if 'Data_Availability' in aod_data and idx < len(
-        aod_data['Data_Availability']) else 1
-    aot550 = convert_aot500_to_aot550(aot500) if data_avail == 0 and not np.isnan(aot500) and aot500 >= 0 else np.nan
+        # 获取大气参数并转换单位
+        to3 = merra2_data['TO3'][idx] if 'TO3' in merra2_data and idx < len(merra2_data['TO3']) else np.nan
+        tqv = merra2_data['TQV'][idx] if 'TQV' in merra2_data and idx < len(merra2_data['TQV']) else np.nan
+        ozone_cmatm, water_gcm2 = convert_merra2_units(to3, tqv)
 
-    # 获取TOA反射率和角度
-    toa_reflectances = []
-    for band in BAND_NAMES:
-        if band in hourly_data and idx < len(hourly_data[band]):
-            toa_reflectances.append(hourly_data[band][idx])
-        else:
-            toa_reflectances.append(np.nan)
+        # 获取AOD数据
+        aot500 = aod_data['AOT'][idx] if 'AOT' in aod_data and idx < len(aod_data['AOT']) else np.nan
+        data_avail = aod_data['Data_Availability'][idx] if 'Data_Availability' in aod_data and idx < len(
+            aod_data['Data_Availability']) else 1
+        aot550 = convert_aot500_to_aot550(aot500) if data_avail == 0 and not np.isnan(
+            aot500) and aot500 >= 0 else np.nan
 
-    # 获取角度数据
-    saz = hourly_data['SAZ'][idx] if 'SAZ' in hourly_data and idx < len(hourly_data['SAZ']) else np.nan
-    saa = hourly_data['SAA'][idx] if 'SAA' in hourly_data and idx < len(hourly_data['SAA']) else np.nan
-    soz = hourly_data['SOZ'][idx] if 'SOZ' in hourly_data and idx < len(hourly_data['SOZ']) else np.nan
-    soa = hourly_data['SOA'][idx] if 'SOA' in hourly_data and idx < len(hourly_data['SOA']) else np.nan
-
-    # 获取LUCC类型
-    lucc_value = lucc_dict.get(station, 255)
-
-    # 执行6S大气校正+BRDF归一化
-    sr_results = np.full(len(BAND_WAVELENGTHS), np.nan, dtype=np.float32)
-    valid_flag = 0
-
-    try:
-        # 创建6S对象
-        s = SixS()
-        s.geometry = Geometry.User()
-
-        # 设置几何参数
-        s.geometry.solar_z = soz
-        s.geometry.solar_a = soa
-        s.geometry.view_z = saz
-        s.geometry.view_a = saa
-
-        # 设置大气参数
-        if not np.isnan(water_gcm2) and not np.isnan(ozone_cmatm) and water_gcm2 > 0 and ozone_cmatm > 0:
-            s.atmos_profile = AtmosProfile.UserWaterAndOzone(water=water_gcm2, ozone=ozone_cmatm)
-        elif not np.isnan(lat):
-            # 根据纬度选择最近的大气廓线
-            if -30 <= lat <= 30:
-                s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.Tropical)
-            elif 30 < lat <= 60:
-                if date.month in [5, 6, 7, 8, 9]:
-                    s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.MidlatitudeSummer)
-                else:
-                    s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.MidlatitudeWinter)
+        # 获取TOA反射率和角度
+        toa_reflectances = []
+        for band in BAND_NAMES:
+            if band in hourly_data and idx < len(hourly_data[band]):
+                toa_reflectances.append(hourly_data[band][idx])
             else:
-                if date.month in [5, 6, 7, 8, 9]:
-                    s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.SubarcticSummer)
+                toa_reflectances.append(np.nan)
+
+        # 获取角度数据
+        saz = hourly_data['SAZ'][idx] if 'SAZ' in hourly_data and idx < len(hourly_data['SAZ']) else np.nan
+        saa = hourly_data['SAA'][idx] if 'SAA' in hourly_data and idx < len(hourly_data['SAA']) else np.nan
+        soz = hourly_data['SOZ'][idx] if 'SOZ' in hourly_data and idx < len(hourly_data['SOZ']) else np.nan
+        soa = hourly_data['SOA'][idx] if 'SOA' in hourly_data and idx < len(hourly_data['SOA']) else np.nan
+
+        # 获取LUCC类型
+        lucc_value = lucc_dict.get(station, 255)
+
+        # 执行6S大气校正+BRDF归一化
+        sr_results = np.full(len(BAND_WAVELENGTHS), np.nan, dtype=np.float32)
+        valid_flag = 0
+
+        try:
+            # 复制基础SixS对象
+            s = s_base.__class__()
+            s.__dict__ = s_base.__dict__.copy()
+
+            s.geometry = Geometry.User()
+
+            # 设置几何参数
+            s.geometry.solar_z = soz
+            s.geometry.solar_a = soa
+            s.geometry.view_z = saz
+            s.geometry.view_a = saa
+
+            # 设置大气参数
+            if not np.isnan(water_gcm2) and not np.isnan(ozone_cmatm) and water_gcm2 > 0 and ozone_cmatm > 0:
+                s.atmos_profile = AtmosProfile.UserWaterAndOzone(water=water_gcm2, ozone=ozone_cmatm)
+            elif not np.isnan(lat):
+                # 根据纬度选择最近的大气廓线
+                if -30 <= lat <= 30:
+                    s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.Tropical)
+                elif 30 < lat <= 60:
+                    if date.month in [5, 6, 7, 8, 9]:
+                        s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.MidlatitudeSummer)
+                    else:
+                        s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.MidlatitudeWinter)
                 else:
-                    s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.SubarcticWinter)
-        else:
-            s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.MidlatitudeSummer)
+                    if date.month in [5, 6, 7, 8, 9]:
+                        s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.SubarcticSummer)
+                    else:
+                        s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.SubarcticWinter)
+            else:
+                s.atmos_profile = AtmosProfile.PredefinedType(AtmosProfile.MidlatitudeSummer)
 
-        # 设置气溶胶参数
-        s.aero_profile = AeroProfile.PredefinedType(AeroProfile.Continental)
-        if not np.isnan(aot550) and aot550 >= 0:
-            s.aot550 = aot550
+            # 设置气溶胶参数
+            s.aero_profile = AeroProfile.PredefinedType(AeroProfile.Continental)
+            if not np.isnan(aot550) and aot550 >= 0:
+                s.aot550 = aot550
 
-        # 设置BRDF模型
-        s = set_brdf_model(s, lucc_value)
+            # 设置BRDF模型
+            s = set_brdf_model(s, lucc_value)
 
-        # 处理每个波段
-        for band_idx, (wavelength, toa_refl) in enumerate(zip(BAND_WAVELENGTHS, toa_reflectances)):
-            if np.isnan(toa_refl) or toa_refl < 0 or toa_refl > 1:
-                continue
+            # 处理每个波段
+            for band_idx, (wavelength, toa_refl) in enumerate(zip(BAND_WAVELENGTHS, toa_reflectances)):
+                if np.isnan(toa_refl) or toa_refl < 0 or toa_refl > 1:
+                    continue
 
-            try:
-                s.wavelength = Wavelength(wavelength)
-                s.atmos_corr = AtmosCorr.AtmosCorrBRDFFromReflectance(reflectance=toa_refl)
-                s.run()
-                sr_results[band_idx] = s.outputs.pixel_reflectance
-            except Exception:
-                # 波段处理错误不影响其他波段
-                sr_results[band_idx] = np.nan
+                try:
+                    s.wavelength = Wavelength(wavelength)
+                    s.atmos_corr = AtmosCorr.AtmosCorrBRDFFromReflectance(reflectance=toa_refl)
+                    s.run()
+                    sr_results[band_idx] = s.outputs.pixel_reflectance
+                except Exception:
+                    # 波段处理错误不影响其他波段
+                    sr_results[band_idx] = np.nan
 
-        valid_flag = 1
-    except Exception as e:
-        print(f"[{get_current_timestamp()}] Error processing station {station}: {str(e)}")
-        pass
+            valid_flag = 1
+        except Exception as e:
+            print(f"[{get_current_timestamp()}] Error processing station {station}: {str(e)}")
+            pass
 
-    return station, gen_avail, sr_results, valid_flag
+        results.append((station, gen_avail, sr_results, valid_flag))
+
+    return results
 
 
 def process_hour(date, hour, stations_list, lucc_dict, station_coords):
@@ -248,29 +269,39 @@ def process_hour(date, hour, stations_list, lucc_dict, station_coords):
     hour_str = f"{hour * 100:04d}"  # 修正时间格式
     time_key = f"{date_str}_{hour_str}"
 
-    # 构建文件路径
-    hourly_toa_file = os.path.join(PATHS["hourly_toa"], date_str[:4], date_str[4:6],
-                                   f"H8_hourly_TOA_angles_{time_key}.nc")
-    merra2_file = os.path.join(PATHS["merra2"], date_str[:4], date_str[4:6],
-                               f"MERRA2_{time_key}_TO3_TQV.nc")
-    aod_file = os.path.join(PATHS["aod"], date_str[:4], date_str[4:6], f"H8L3ARP_{time_key}.nc")
+    # 检查缓存中是否有该日期数据
+    if date_str in MEMORY_CACHE["date_data_cache"]:
+        hourly_data, merra2_data, aod_data = MEMORY_CACHE["date_data_cache"][date_str]
+    else:
+        # 构建文件路径
+        hourly_toa_file = os.path.join(PATHS["hourly_toa"], date_str[:4], date_str[4:6],
+                                       f"H8_hourly_TOA_angles_{date_str}.nc")
+        merra2_file = os.path.join(PATHS["merra2"], date_str[:4], date_str[4:6],
+                                   f"MERRA2_{date_str}_TO3_TQV.nc")
+        aod_file = os.path.join(PATHS["aod"], date_str[:4], date_str[4:6], f"H8L3ARP_{date_str}.nc")
+        print("hourly_toa_file", hourly_toa_file,"merra2_file", merra2_file,"aod_file", aod_file)
+
+        # 检查输入文件是否存在
+        files_exist = [os.path.exists(hourly_toa_file), os.path.exists(merra2_file), os.path.exists(aod_file)]
+        if not all(files_exist):
+            print(f"[{get_current_timestamp()}] [SKIPPED] Missing files for {date_str}")
+            return None, (0, 0, 0.0)
+
+        # 加载数据
+        hourly_data = load_netcdf_data(hourly_toa_file,
+                                       ['Station'] + BAND_NAMES + ANGLE_NAMES + ['hourly_availability'])
+        merra2_data = load_netcdf_data(merra2_file, ['Station', 'TO3', 'TQV'])
+        aod_data = load_netcdf_data(aod_file, ['Station', 'AOT', 'Data_Availability'])
+
+        # 缓存数据
+        MEMORY_CACHE["date_data_cache"][date_str] = (hourly_data, merra2_data, aod_data)
+
     output_file = os.path.join(PATHS["output"], f"SR_{time_key}.nc")
 
     # 检查输出文件是否已存在
     if os.path.exists(output_file):
         print(f"[{get_current_timestamp()}] [SKIPPED] Output file already exists: {output_file}")
         return output_file, (0, 0, 0.0)
-
-    # 检查输入文件是否存在
-    files_exist = [os.path.exists(hourly_toa_file), os.path.exists(merra2_file), os.path.exists(aod_file)]
-    if not all(files_exist):
-        print(f"[{get_current_timestamp()}] [SKIPPED] Missing files for {time_key}")
-        return None, (0, 0, 0.0)
-
-    # 加载数据
-    hourly_data = load_netcdf_data(hourly_toa_file, ['Station'] + BAND_NAMES + ANGLE_NAMES + ['hourly_availability'])
-    merra2_data = load_netcdf_data(merra2_file, ['Station', 'TO3', 'TQV'])
-    aod_data = load_netcdf_data(aod_file, ['Station', 'AOT', 'Data_Availability'])
 
     if None in [hourly_data, merra2_data, aod_data]:
         print(f"[{get_current_timestamp()}] [ERROR] Failed to load data for {time_key}")
@@ -286,21 +317,32 @@ def process_hour(date, hour, stations_list, lucc_dict, station_coords):
     valid_flags = np.zeros(len(stations_list), dtype=np.int8)
     station_index_map = {station: idx for idx, station in enumerate(stations_list)}
 
-    valid_count = 0
-    total_stations = len(matched_stations)
-
+    # 分批处理站点
+    batch_size = 50  # 每批处理的站点数
+    station_batches = []
     for station in matched_stations:
         idx = station_idx_map[station]
-        task = (station, idx, hourly_data, merra2_data, aod_data, lucc_dict, station_coords, date)
-        station, gen, sr, valid = process_station(task)
+        station_batches.append((station, idx, hourly_data, merra2_data, aod_data, lucc_dict, station_coords, date))
 
-        if station in station_index_map:
-            sidx = station_index_map[station]
-            gen_avail[sidx] = gen
-            sr_results[sidx] = sr
-            valid_flags[sidx] = valid
-            if valid == 1:
-                valid_count += 1
+    # 使用多进程处理站点批次
+    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        futures = []
+        for i in range(0, len(station_batches), batch_size):
+            batch = station_batches[i:i + batch_size]
+            futures.append(executor.submit(process_station_batch, batch))
+
+        for future in as_completed(futures):
+            batch_results = future.result()
+            for station, gen, sr, valid in batch_results:
+                if station in station_index_map:
+                    sidx = station_index_map[station]
+                    gen_avail[sidx] = gen
+                    sr_results[sidx] = sr
+                    valid_flags[sidx] = valid
+
+    # 计算有效站点数
+    valid_count = np.sum(valid_flags)
+    total_stations = len(matched_stations)
 
     # 保存结果
     try:
@@ -314,16 +356,16 @@ def process_hour(date, hour, stations_list, lucc_dict, station_coords):
             station_var[:] = np.array(stations_list, dtype=object)
 
             # 创建可用性变量
-            gen_avail_var = ds.createVariable('General_availability', np.int8, ('station',))
+            gen_avail_var = ds.createVariable('General_availability', np.int8, ('station',), zlib=True, complevel=4)
             gen_avail_var[:] = gen_avail
 
             # 创建有效性标志变量
-            valid_var = ds.createVariable('valid_flag', np.int8, ('station',))
+            valid_var = ds.createVariable('valid_flag', np.int8, ('station',), zlib=True, complevel=4)
             valid_var[:] = valid_flags
 
             # 创建每个波段作为单独的变量
             for band_idx, band_name in enumerate(BAND_NAMES):
-                band_var = ds.createVariable(band_name, np.float32, ('station',))
+                band_var = ds.createVariable(band_name, np.float32, ('station',), zlib=True, complevel=4)
                 band_var[:] = sr_results[:, band_idx]
                 band_var.units = "reflectance"
                 band_var.description = f"Surface reflectance for band {band_name} ({BAND_WAVELENGTHS[band_idx]}μm)"
@@ -347,6 +389,9 @@ def process_hour(date, hour, stations_list, lucc_dict, station_coords):
 
 def load_lucc_data():
     """加载LUCC数据到内存"""
+    if MEMORY_CACHE["lucc_dict"] is not None:
+        return MEMORY_CACHE["lucc_dict"]
+
     lucc_file = PATHS["lucc"]
     if not os.path.exists(lucc_file):
         print(f"[{get_current_timestamp()}] [ERROR] LUCC file not found: {lucc_file}")
@@ -369,7 +414,8 @@ def load_lucc_data():
             if isinstance(lucc_values, np.ma.MaskedArray):
                 lucc_values = lucc_values.filled(255)
 
-            return dict(zip(stations, lucc_values))
+            MEMORY_CACHE["lucc_dict"] = dict(zip(stations, lucc_values))
+            return MEMORY_CACHE["lucc_dict"]
     except Exception as e:
         print(f"[{get_current_timestamp()}] [ERROR] Failed to load LUCC data: {str(e)}")
         return None
@@ -377,6 +423,9 @@ def load_lucc_data():
 
 def load_station_coords():
     """从LUTs.nc文件加载站点经纬度信息"""
+    if MEMORY_CACHE["station_coords"] is not None:
+        return MEMORY_CACHE["station_coords"]
+
     luts_file = PATHS["luts"]
     if not os.path.exists(luts_file):
         print(f"[{get_current_timestamp()}] [ERROR] LUTs file not found: {luts_file}")
@@ -404,7 +453,9 @@ def load_station_coords():
             if isinstance(lons, np.ma.MaskedArray):
                 lons = lons.filled(np.nan)
 
-            return {station: (lat, lon) for station, lat, lon in zip(stations, lats, lons)}
+            MEMORY_CACHE["station_coords"] = {station: (lat, lon) for station, lat, lon in zip(stations, lats, lons)}
+            MEMORY_CACHE["stations_list"] = stations
+            return MEMORY_CACHE["station_coords"]
     except Exception as e:
         print(f"[{get_current_timestamp()}] [ERROR] Failed to load station coordinates: {str(e)}")
         return {}
@@ -424,7 +475,7 @@ def main():
     if not station_coords:
         print(f"[{get_current_timestamp()}] [ERROR] Failed to load station coordinates. Exiting.")
         return
-    stations_list = list(station_coords.keys())
+    stations_list = MEMORY_CACHE["stations_list"] or list(station_coords.keys())
     print(f"[{get_current_timestamp()}] [INFO] Loaded {len(stations_list)} stations")
 
     # 加载LUCC数据
@@ -459,8 +510,7 @@ def main():
     total_stations = 0
 
     # 使用进程池
-    max_workers = max(1, os.cpu_count() // 2)
-    # max_workers = 6
+    max_workers = min(os.cpu_count() * 2, len(tasks))  # 根据任务数和CPU核心数动态调整
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {}

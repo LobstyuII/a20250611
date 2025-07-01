@@ -24,8 +24,8 @@ MERRA-2 臭氧与总可降水量数据文件说明
    | Station   | 站点名称                 | 无            | 字符串   | Station(N)      |
    | Lat       | 纬度坐标                 | 度            | float32  | Station(N)      |
    | Lon       | 经度坐标                 | 度            | float32  | Station(N)      |
-   | TO3       | 总柱状臭氧浓度           | Dobson        | float32  | time(1), Station(N) |
-   | TQV       | 总可降水量（水汽柱总量） | kg/m²         | float32  | time(1), Station(N) |
+   | TO3       | 总柱状臭氧浓度           | Dobson        | float32  | Station(N)      |
+   | TQV       | 总可降水量（水汽柱总量） | kg/m²         | float32  | Station(N)      |
 
 4. 数据处理说明
    - 数据来源: NASA MERRA-2再分析数据集
@@ -84,8 +84,8 @@ MERRA-2 Ozone and Total Precipitable Water Data File Documentation
    | Station   | Station names                 | None        | String    | Station(N)     |
    | Lat       | Latitude coordinates          | degrees     | float32   | Station(N)     |
    | Lon       | Longitude coordinates         | degrees     | float32   | Station(N)     |
-   | TO3       | Total Column Ozone            | Dobson      | float32   | time(1), Station(N) |
-   | TQV       | Total Precipitable Water Vapor | kg/m²       | float32   | time(1), Station(N) |
+   | TO3       | Total Column Ozone            | Dobson      | float32   | Station(N)      |
+   | TQV       | Total Precipitable Water Vapor | kg/m²       | float32   |  Station(N)      |
 
 4. Data Processing Notes
    - Data Source: NASA MERRA-2 reanalysis dataset

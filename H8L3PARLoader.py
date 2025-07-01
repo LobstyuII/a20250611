@@ -448,8 +448,8 @@ def main_l3():
 
     # 设置日期范围和时间（每小时一次）
     start_date = datetime.date(2015, 7, 7)  # 从2015年7月7日开始
-    end_date = datetime.date(2023, 12, 31)  # 可根据需要调整结束日期
-    hours = list(range(0, 13) + range(21, 23))  # 0-23小时
+    end_date = datetime.date(2021, 12, 31)  # 可根据需要调整结束日期
+    hours = [*range(0, 13), *range(21, 24)]  # 0-23小时
 
     # 按月份处理
     current_date = start_date

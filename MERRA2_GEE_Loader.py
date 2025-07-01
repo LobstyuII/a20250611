@@ -32,26 +32,18 @@ def GEE_authorizing():
         raise
 
 
-def read_luts_nc(luts_path):
-    """从LUTs.nc文件中读取站点和时间信息"""
+def read_luts_stations(luts_path):
+    """从LUTs.nc文件中读取站点信息（不包括时间）"""
     try:
         ds = xr.open_dataset(luts_path)
         logging.info(f"成功读取 LUTs.nc 文件")
 
-        # 获取站点和时间信息
+        # 获取站点信息
         stations = ds['Station'].values
         lats = ds['Lat'].values
         lons = ds['Lon'].values
-        times = ds['time'].values
 
-        # 筛选整点时间（小时）
-        hourly_times = []
-        for t in times:
-            dt = pd.Timestamp(t)
-            if dt.minute == 0 and dt.second == 0:
-                hourly_times.append(dt.to_pydatetime())
-
-        return stations, lats, lons, hourly_times
+        return stations, lats, lons
 
     except Exception as e:
         logging.error(f"读取 LUTs.nc 文件失败: {e}")
@@ -79,7 +71,7 @@ def get_feature_collection(stations, lats, lons):
 
 
 def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_path):
-    """保存单小时MERRA-2数据到单独的NC文件"""
+    """保存单小时MERRA-2数据到单独的NC文件（修复格式问题）"""
     try:
         if isinstance(dt, np.datetime64):
             dt = pd.Timestamp(dt).to_pydatetime()
@@ -99,7 +91,7 @@ def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_pa
             logging.info(f"文件已存在: {filename}")
             return True
 
-        # 新增：删除可能已损坏的现有文件
+        # 删除可能已损坏的现有文件
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -107,27 +99,24 @@ def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_pa
             except Exception as e:
                 logging.error(f"删除文件失败: {e}")
 
-        # 创建新的NC文件
+        # 创建新的NC文件 - 修复格式问题
         with nc.Dataset(file_path, 'w', format='NETCDF4') as ds:
-            # 定义维度
+            # 定义维度 - 仅保留Station维度
             ds.createDimension('Station', len(stations))
-            ds.createDimension('time', 1)
 
             # 计算最大字符串长度
-            max_str_len = max(len(str(s)) for s in stations) + 1  # +1 for safety
+            max_str_len = max(len(str(s)) for s in stations) + 1
 
-            # 定义变量
-            time_var = ds.createVariable('time', 'f8', ('time',))
-            # 修复字符串变量创建
+            # 定义变量 - 修复：使用一维数组
             station_var = ds.createVariable('Station', f'S{max_str_len}', ('Station',))
             lat_var = ds.createVariable('Lat', 'f4', ('Station',))
             lon_var = ds.createVariable('Lon', 'f4', ('Station',))
-            to3_var = ds.createVariable('TO3', 'f4', ('time', 'Station'), fill_value=-9999.0)
-            tqv_var = ds.createVariable('TQV', 'f4', ('time', 'Station'), fill_value=-9999.0)
+            to3_var = ds.createVariable('TO3', 'f4', ('Station',), fill_value=-9999.0)
+            tqv_var = ds.createVariable('TQV', 'f4', ('Station',), fill_value=-9999.0)
 
-            # 设置时间属性
-            time_var.units = 'hours since 1980-01-01 00:00:00'
-            time_var.calendar = 'standard'
+            # 设置全局时间属性
+            ds.setncattr('time', dt.strftime('%Y-%m-%d %H:%M:%S'))
+            ds.setncattr('datetime', dt.isoformat())
 
             # 设置变量属性
             to3_var.long_name = 'Total Ozone Column'
@@ -135,17 +124,13 @@ def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_pa
             tqv_var.long_name = 'Total Precipitable Water Vapor'
             tqv_var.units = 'kg/m^2'
 
-            # 写入数据
-            time_var[:] = nc.date2num(dt, time_var.units, time_var.calendar)
-
-            # 修复字符串写入
+            # 写入数据 - 修复：直接使用一维数组
             station_arr = np.array([np.string_(str(s)) for s in stations], dtype=f'S{max_str_len}')
             station_var[:] = station_arr
-
             lat_var[:] = lats
             lon_var[:] = lons
-            to3_var[0, :] = to3_data
-            tqv_var[0, :] = tqv_data
+            to3_var[:] = to3_data
+            tqv_var[:] = tqv_data
 
         return True
     except Exception as e:
@@ -161,6 +146,7 @@ def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_pa
                 pass
 
         return False
+
 
 def process_hourly_merra_data(dt, collection, poi_fc, stations, lats, lons, base_path, max_retries=5):
     """处理单小时MERRA-2数据并保存（带重试机制）"""
@@ -240,6 +226,28 @@ def process_hourly_merra_data(dt, collection, poi_fc, stations, lats, lons, base
     return False
 
 
+def generate_hourly_times(start_date, end_date):
+    """生成指定日期范围内的所有整点时间"""
+    hourly_times = []
+
+    # 确保日期是datetime.date对象
+    if isinstance(start_date, str):
+        start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+    if isinstance(end_date, str):
+        end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    # 将开始日期转换为datetime对象（包含时间）
+    current_dt = datetime.datetime.combine(start_date, datetime.time(0, 0))
+    end_dt = datetime.datetime.combine(end_date, datetime.time(23, 0))
+
+    # 生成所有整点时间
+    while current_dt <= end_dt:
+        hourly_times.append(current_dt)
+        current_dt += datetime.timedelta(hours=1)
+
+    return hourly_times
+
+
 def main():
     # 初始化 GEE
     GEE_authorizing()
@@ -248,9 +256,17 @@ def main():
     data_path = "D:/H8_data"  # 修改为您的数据存储路径
     luts_path = os.path.join(data_path, "LUTs.nc")
 
-    # 读取LUTs.nc文件
-    stations, lats, lons, hourly_times = read_luts_nc(luts_path)
-    logging.info(f"共读取 {len(stations)} 个站点，{len(hourly_times)} 个整点时间")
+    # 1. 读取LUTs.nc文件获取站点信息
+    stations, lats, lons = read_luts_stations(luts_path)
+    logging.info(f"共读取 {len(stations)} 个站点")
+
+    # 2. 明码指定时间范围
+    start_date = datetime.date(2021, 10, 1)
+    end_date = datetime.date(2024, 12, 31)
+
+    # 3. 生成整点时间列表
+    hourly_times = generate_hourly_times(start_date, end_date)
+    logging.info(f"生成时间范围: {start_date} 到 {end_date}, 共 {len(hourly_times)} 个整点时间")
 
     # 创建FeatureCollection
     poi_fc = get_feature_collection(stations, lats, lons)
@@ -269,11 +285,11 @@ def main():
 
         year = py_dt.strftime("%Y")
         month = py_dt.strftime("%m")
-        filename = f"MERRA2_{py_dt.strftime('%Y%m%d_%H%M')}_TO3_TQV.nc"  # 更新文件名格式
+        filename = f"MERRA2_{py_dt.strftime('%Y%m%d_%H%M')}_TO3_TQV.nc"
         file_path = os.path.join(data_path, "MERRA2", year, month, filename)
 
         # 检查文件是否需要下载
-        if not os.path.exists(file_path) or os.path.getsize(file_path) <= 2048:  # 增大文件大小检查阈值
+        if not os.path.exists(file_path) or os.path.getsize(file_path) <= 2048:
             tasks.append(dt)
 
     logging.info(f"总时间点: {len(hourly_times)}, 已存在: {len(hourly_times) - len(tasks)}, 待处理: {len(tasks)}")
@@ -283,7 +299,7 @@ def main():
     failed_count = 0
     total_tasks = len(tasks)
 
-    # 设置并行线程数（建议4-8个）
+    # 设置并行线程数
     max_workers = 4
 
     with tqdm(total=total_tasks, desc="下载MERRA-2数据") as pbar:
@@ -310,7 +326,7 @@ def main():
 
 
 def merge_merra_data(base_path, output_path):
-    """合并所有小时MERRA-2数据到单个NetCDF文件"""
+    """合并所有小时MERRA-2数据到单个NetCDF文件（更新为处理新格式）"""
     try:
         all_files = []
         merra_dir = os.path.join(base_path, "MERRA2")
@@ -327,19 +343,40 @@ def merge_merra_data(base_path, output_path):
         logging.info(f"找到 {len(all_files)} 个数据文件，开始合并...")
         all_files.sort()
 
+        # 初始化数据集列表
         ds_list = []
+        time_values = []
+
         for file in tqdm(all_files, desc="合并MERRA-2文件"):
             try:
+                # 从全局属性获取时间
+                with nc.Dataset(file) as ds:
+                    time_str = ds.getncattr('datetime')
+                    dt = datetime.datetime.fromisoformat(time_str)
+
+                # 打开为xarray数据集
                 ds = xr.open_dataset(file)
+
+                # 添加时间坐标
+                ds = ds.assign_coords(time=dt)
+                ds = ds.expand_dims('time')
+
                 ds_list.append(ds)
             except Exception as e:
-                logging.warning(f"无法打开文件 {file}: {e}")
+                logging.warning(f"无法打开或处理文件 {file}: {e}")
 
         if not ds_list:
             logging.error("没有有效文件可合并")
             return
 
+        # 沿时间维度合并
         combined = xr.concat(ds_list, dim="time")
+
+        # 设置时间变量属性
+        combined.time.encoding['units'] = 'hours since 1980-01-01 00:00:00'
+        combined.time.encoding['calendar'] = 'standard'
+
+        # 保存合并后的数据集
         combined.to_netcdf(output_path)
         logging.info(f"成功合并数据到: {output_path}")
 
@@ -361,6 +398,6 @@ if __name__ == "__main__":
     main()
 
     # 第二步：合并数据（在下载完成后运行）
-    # data_path = "D:/MERRA2_data"
+    # data_path = "D:/H8_data"
     # output_nc = os.path.join(data_path, "MERRA2_TO3_TQV_combined.nc")
     # merge_merra_data(data_path, output_nc)
