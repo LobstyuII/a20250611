@@ -2,7 +2,8 @@ import os
 import time
 import netCDF4 as nc
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from Py6S import *
 
 # 更新路径配置
@@ -19,6 +20,13 @@ PATHS = {
 BAND_WAVELENGTHS = [0.47, 0.51, 0.64, 0.86]
 BAND_NAMES = [f"Albedo_0{i + 1}" for i in range(0, 4)]
 ANGLE_NAMES = ['SAZ', 'SAA', 'SOZ', 'SOA']
+
+# 日期范围
+START_DATE = datetime(2015, 7, 7)
+END_DATE = datetime(2016, 12, 31)
+
+# 只处理白天的小时 (0-12时和21-23时)
+PROCESS_HOURS = list(range(0, 13)) + list(range(21, 24))
 
 # LUCC到BRDF参数的映射
 LUCC_TO_BRDF = {
@@ -42,17 +50,6 @@ LUCC_TO_BRDF = {
     255: {"model": "Lambertian", "albedo": 0.2}
 }
 
-# 预初始化6S对象
-PRECONFIGURED_SIXS = None
-
-
-def initialize_sixs():
-    """初始化6S对象"""
-    global PRECONFIGURED_SIXS
-
-    if PRECONFIGURED_SIXS is None:
-        PRECONFIGURED_SIXS = SixS()
-
 
 def get_current_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -67,17 +64,14 @@ def calculate_data_validity(data_array):
     return valid, total, valid / total if total > 0 else 0.0
 
 
-def load_netcdf_data(file_path, variables, step_name=""):
-    """高效加载NetCDF文件数据，处理掩码值，并计算有效性"""
+def load_netcdf_data(file_path, variables):
+    """高效加载NetCDF文件数据，处理掩码值"""
     if not os.path.exists(file_path):
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] File not found: {file_path}")
-        return None, (0, 0, 0.0)
+        return None
 
     try:
         with nc.Dataset(file_path) as ds:
             data = {}
-            validity_info = {}
-
             for var in variables:
                 if var == 'Station':
                     var_data = ds.variables[var][:]
@@ -88,21 +82,15 @@ def load_netcdf_data(file_path, variables, step_name=""):
                         data[var] = [s.strip() for s in var_data]
                     else:  # 其他类型
                         data[var] = [str(s).strip() for s in var_data]
-                    # 字符串数据不计算有效性
-                    validity_info[var] = (len(data[var]), len(data[var]), 1.0)
                 else:
                     var_data = ds.variables[var][:]
                     if isinstance(var_data, np.ma.MaskedArray):
                         var_data = var_data.filled(np.nan)
                     data[var] = var_data
-                    # 计算数值数据的有效性
-                    valid, total, ratio = calculate_data_validity(var_data)
-                    validity_info[var] = (valid, total, ratio)
-
-            return data, validity_info
+            return data
     except Exception as e:
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] Error loading {file_path}: {str(e)}")
-        return None, (0, 0, 0.0)
+        print(f"[{get_current_timestamp()}] Error loading {file_path}: {str(e)}")
+        return None
 
 
 def set_brdf_model(s, lucc_value):
@@ -153,7 +141,6 @@ def process_station(station_data):
     """处理单个站点的数据"""
     station, idx, hourly_data, merra2_data, aod_data, lucc_dict, station_coords, date = station_data
     lat, lon = station_coords.get(station, (np.nan, np.nan))
-
     # 计算综合可用性
     hourly_avail = hourly_data['hourly_availability'][idx]
     gen_avail = calculate_general_availability(hourly_avail)
@@ -161,30 +148,45 @@ def process_station(station_data):
     if gen_avail == 1:
         return station, gen_avail, np.full(len(BAND_WAVELENGTHS), np.nan), 0
 
-    # 获取大气参数并转换单位 - 添加边界检查
+    # 获取大气参数并转换单位
     to3 = merra2_data['TO3'][idx] if 'TO3' in merra2_data and idx < len(merra2_data['TO3']) else np.nan
     tqv = merra2_data['TQV'][idx] if 'TQV' in merra2_data and idx < len(merra2_data['TQV']) else np.nan
     ozone_cmatm, water_gcm2 = convert_merra2_units(to3, tqv)
 
-    # 获取AOD数据 - 添加边界检查
+    # 获取AOD数据
     aot500 = aod_data['AOT'][idx] if 'AOT' in aod_data and idx < len(aod_data['AOT']) else np.nan
     data_avail = aod_data['Data_Availability'][idx] if 'Data_Availability' in aod_data and idx < len(
         aod_data['Data_Availability']) else 1
     aot550 = convert_aot500_to_aot550(aot500) if data_avail == 0 and not np.isnan(aot500) and aot500 >= 0 else np.nan
 
-    # 获取TOA反射率和角度 - 添加边界检查
-    toa_reflectances = []
-    for band in BAND_NAMES:
-        if band in hourly_data and idx < len(hourly_data[band]):
-            toa_reflectances.append(hourly_data[band][idx])
-        else:
-            toa_reflectances.append(np.nan)
-
-    # 获取角度数据 - 添加边界检查
+    # 获取角度数据
     saz = hourly_data['SAZ'][idx] if 'SAZ' in hourly_data and idx < len(hourly_data['SAZ']) else np.nan
     saa = hourly_data['SAA'][idx] if 'SAA' in hourly_data and idx < len(hourly_data['SAA']) else np.nan
     soz = hourly_data['SOZ'][idx] if 'SOZ' in hourly_data and idx < len(hourly_data['SOZ']) else np.nan
     soa = hourly_data['SOA'][idx] if 'SOA' in hourly_data and idx < len(hourly_data['SOA']) else np.nan
+
+    # 关键修复：将H8的Albedo转换为TOA反射率
+    # H8的"Albedo"实际上是reflectance * cos(SOZ)，我们需要原始TOA反射率
+    toa_reflectances = []
+    if not np.isnan(soz):
+        # 计算cos(SOZ)，确保不小于0.01
+        cos_soz = max(np.cos(np.radians(soz)), 0.01)
+
+        for band in BAND_NAMES:
+            if band in hourly_data and idx < len(hourly_data[band]):
+                albedo_val = hourly_data[band][idx]
+                # 转换为原始TOA反射率
+                toa_refl = albedo_val / cos_soz
+                # 限制在合理范围内
+                if toa_refl > 1.0:
+                    toa_refl = 1.0
+                elif toa_refl < 0.0:
+                    toa_refl = 0.0
+                toa_reflectances.append(toa_refl)
+            else:
+                toa_reflectances.append(np.nan)
+    else:
+        toa_reflectances = [np.nan] * len(BAND_NAMES)
 
     # 获取LUCC类型
     lucc_value = lucc_dict.get(station, 255)
@@ -194,15 +196,19 @@ def process_station(station_data):
     valid_flag = 0
 
     try:
-        # 复用预初始化的6S对象
+        # 创建6S对象
         s = SixS()
         s.geometry = Geometry.User()
 
+        # 关键修复：确保角度单位正确
+        # 6S要求天顶角范围0-90度（0为天顶，90为地平线），方位角0-360度（0为北，顺时针增加）
+        # H8数据符合此标准，直接使用
+
         # 设置几何参数
-        s.geometry.solar_z = soz
-        s.geometry.solar_a = soa
-        s.geometry.view_z = saz
-        s.geometry.view_a = saa
+        s.geometry.solar_z = soz  # 太阳天顶角（度）
+        s.geometry.solar_a = soa  # 太阳方位角（度）
+        s.geometry.view_z = saz  # 观测天顶角（度）
+        s.geometry.view_a = saa  # 观测方位角（度）
 
         # 设置大气参数
         if not np.isnan(water_gcm2) and not np.isnan(ozone_cmatm) and water_gcm2 > 0 and ozone_cmatm > 0:
@@ -232,7 +238,7 @@ def process_station(station_data):
         # 设置BRDF模型
         s = set_brdf_model(s, lucc_value)
 
-        # 处理每个波段（只处理前4个波段）
+        # 处理每个波段
         for band_idx, (wavelength, toa_refl) in enumerate(zip(BAND_WAVELENGTHS, toa_reflectances)):
             if np.isnan(toa_refl) or toa_refl < 0 or toa_refl > 1:
                 continue
@@ -242,9 +248,8 @@ def process_station(station_data):
                 s.atmos_corr = AtmosCorr.AtmosCorrBRDFFromReflectance(reflectance=toa_refl)
                 s.run()
                 sr_results[band_idx] = s.outputs.pixel_reflectance
-            except Exception as e:
-                print(
-                    f"[{get_current_timestamp()}] Error processing band {BAND_NAMES[band_idx]} for station {station}: {str(e)}")
+            except Exception:
+                # 波段处理错误不影响其他波段
                 sr_results[band_idx] = np.nan
 
         valid_flag = 1
@@ -255,73 +260,48 @@ def process_station(station_data):
     return station, gen_avail, sr_results, valid_flag
 
 
+# 以下函数保持不变（load_lucc_data, load_station_coords, process_hour, main等）
+# 为节省篇幅，这里省略了未修改的函数部分，实际使用时请保留原代码中的这些函数
+
 def process_hour(date, hour, stations_list, lucc_dict, station_coords):
     """处理单个小时的数据"""
     date_str = date.strftime("%Y%m%d")
-    # 修正时间格式：将小时乘以100得到正确的格式（0000, 1000, 2000等）
     hour_str = f"{hour * 100:04d}"  # 修正时间格式
+    time_key = f"{date_str}_{hour_str}"
 
-    print(f"\n[{get_current_timestamp()}] [STEP:START] Processing {date_str}_{hour_str} ================")
-
-    # 构建文件路径 - 使用修正后的时间格式
+    # 构建文件路径
     hourly_toa_file = os.path.join(PATHS["hourly_toa"], date_str[:4], date_str[4:6],
-                                   f"H8_hourly_TOA_angles_{date_str}_{hour_str}.nc")
+                                   f"H8_hourly_TOA_angles_{time_key}.nc")
     merra2_file = os.path.join(PATHS["merra2"], date_str[:4], date_str[4:6],
-                               f"MERRA2_{date_str}_{hour_str}_TO3_TQV.nc")
-    aod_file = os.path.join(PATHS["aod"], date_str[:4], date_str[4:6], f"H8L3ARP_{date_str}_{hour_str}.nc")
-    output_file = os.path.join(PATHS["output"], f"SR_{date_str}_{hour_str}.nc")
+                               f"MERRA2_{time_key}_TO3_TQV.nc")
+    aod_file = os.path.join(PATHS["aod"], date_str[:4], date_str[4:6], f"H8L3ARP_{time_key}.nc")
+    output_file = os.path.join(PATHS["output"], f"SR_{time_key}.nc")
 
-    # 步骤1: 检查输入文件
-    step_name = "FILE_CHECK"
+    # 检查输出文件是否已存在
+    if os.path.exists(output_file):
+        print(f"[{get_current_timestamp()}] [SKIPPED] Output file already exists: {output_file}")
+        return output_file, (0, 0, 0.0)
+
+    # 检查输入文件是否存在
     files_exist = [os.path.exists(hourly_toa_file), os.path.exists(merra2_file), os.path.exists(aod_file)]
-    exist_ratio = sum(files_exist) / len(files_exist)
-    print(f"[{get_current_timestamp()}] [STEP:{step_name}] File existence ratio: {exist_ratio:.2%} "
-          f"(Hourly_TOA: {'Found' if files_exist[0] else 'Missing'}, "
-          f"MERRA2: {'Found' if files_exist[1] else 'Missing'}, "
-          f"AOD: {'Found' if files_exist[2] else 'Missing'})")
-
     if not all(files_exist):
-        print(f"[{get_current_timestamp()}] [STEP:END] Skipping {date_str}_{hour_str} due to missing files")
+        print(f"[{get_current_timestamp()}] [SKIPPED] Missing files for {time_key}")
         return None, (0, 0, 0.0)
 
-    # 步骤2: 加载数据
-    step_name = "DATA_LOAD"
-    hourly_data, hourly_validity = load_netcdf_data(hourly_toa_file,
-                                                    ['Station'] + BAND_NAMES + ANGLE_NAMES + ['hourly_availability'],
-                                                    step_name)
-    merra2_data, merra2_validity = load_netcdf_data(merra2_file, ['Station', 'TO3', 'TQV'], step_name)
-    aod_data, aod_validity = load_netcdf_data(aod_file, ['Station', 'AOT', 'Data_Availability'], step_name)
-
-    # 打印加载数据的有效性
-    def print_validity_info(data_name, validity_dict):
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] {data_name} data validity:")
-        for var, (valid, total, ratio) in validity_dict.items():
-            print(f"  - {var}: {valid}/{total} ({ratio:.2%})")
-
-    if hourly_data:
-        print_validity_info("Hourly_TOA", hourly_validity)
-    if merra2_data:
-        print_validity_info("MERRA2", merra2_validity)
-    if aod_data:
-        print_validity_info("AOD", aod_validity)
+    # 加载数据
+    hourly_data = load_netcdf_data(hourly_toa_file, ['Station'] + BAND_NAMES + ANGLE_NAMES + ['hourly_availability'])
+    merra2_data = load_netcdf_data(merra2_file, ['Station', 'TO3', 'TQV'])
+    aod_data = load_netcdf_data(aod_file, ['Station', 'AOT', 'Data_Availability'])
 
     if None in [hourly_data, merra2_data, aod_data]:
-        print(f"[{get_current_timestamp()}] [STEP:END] Failed to load data for {date_str}_{hour_str}")
+        print(f"[{get_current_timestamp()}] [ERROR] Failed to load data for {time_key}")
         return None, (0, 0, 0.0)
 
-    # 步骤3: 创建站点索引映射
-    step_name = "STATION_MAPPING"
+    # 创建站点索引映射
     station_idx_map = {station: idx for idx, station in enumerate(hourly_data['Station'])}
     matched_stations = [s for s in stations_list if s in station_idx_map]
-    match_ratio = len(matched_stations) / len(stations_list) if stations_list else 0
-    print(f"[{get_current_timestamp()}] [STEP:{step_name}] Station match ratio: {match_ratio:.2%} "
-          f"({len(matched_stations)}/{len(stations_list)} stations)")
 
-    # 步骤4: 处理站点数据
-    step_name = "STATION_PROCESSING"
-    print(f"[{get_current_timestamp()}] [STEP:{step_name}] Processing {len(matched_stations)} stations...")
-
-    # 初始化结果数组
+    # 处理站点数据
     sr_results = np.full((len(stations_list), len(BAND_WAVELENGTHS)), np.nan, dtype=np.float32)
     gen_avail = np.full(len(stations_list), -1, dtype=np.int8)
     valid_flags = np.zeros(len(stations_list), dtype=np.int8)
@@ -343,31 +323,14 @@ def process_hour(date, hour, stations_list, lucc_dict, station_coords):
             if valid == 1:
                 valid_count += 1
 
-    # 计算有效性比例
-    sr_validity = []
-    for band_idx in range(len(BAND_WAVELENGTHS)):
-        band_data = sr_results[:, band_idx]
-        valid, total, ratio = calculate_data_validity(band_data)
-        sr_validity.append((valid, total, ratio))
-
-    overall_valid_ratio = valid_count / total_stations if total_stations > 0 else 0
-    print(f"[{get_current_timestamp()}] [STEP:{step_name}] Station processing completed: "
-          f"{valid_count}/{total_stations} stations valid ({overall_valid_ratio:.2%})")
-
-    # 打印各波段有效性
-    for band_idx, (valid, total, ratio) in enumerate(sr_validity):
-        print(f"  - Band {BAND_NAMES[band_idx]} ({BAND_WAVELENGTHS[band_idx]}μm): "
-              f"{valid}/{total} valid ({ratio:.2%})")
-
-    # 步骤5: 保存结果 - 修正为每个波段一个变量
-    step_name = "SAVE_RESULTS"
+    # 保存结果
     try:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         with nc.Dataset(output_file, 'w') as ds:
             # 创建维度
             ds.createDimension('station', len(stations_list))
 
-            # 创建站点变量 - 修正为 'Station'（大写）
+            # 创建站点变量
             station_var = ds.createVariable('Station', str, ('station',))
             station_var[:] = np.array(stations_list, dtype=object)
 
@@ -379,7 +342,7 @@ def process_hour(date, hour, stations_list, lucc_dict, station_coords):
             valid_var = ds.createVariable('valid_flag', np.int8, ('station',))
             valid_var[:] = valid_flags
 
-            # 创建每个波段作为单独的变量（只前4个波段）
+            # 创建每个波段作为单独的变量
             for band_idx, band_name in enumerate(BAND_NAMES):
                 band_var = ds.createVariable(band_name, np.float32, ('station',))
                 band_var[:] = sr_results[:, band_idx]
@@ -394,26 +357,24 @@ def process_hour(date, hour, stations_list, lucc_dict, station_coords):
             ds.source = "6S atmospheric correction with BRDF normalization"
             ds.author = "H8SR Processing System"
 
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] Generated SR product: {output_file}")
+        valid_ratio = valid_count / total_stations if total_stations > 0 else 0
         print(
-            f"  Output file structure: Station, General_availability, valid_flag, and separate variables for each band")
-        return output_file, (valid_count, total_stations, overall_valid_ratio)
+            f"[{get_current_timestamp()}] [SUCCESS] Generated {output_file} - Valid stations: {valid_count}/{total_stations} ({valid_ratio:.2%})")
+        return output_file, (valid_count, total_stations, valid_ratio)
     except Exception as e:
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] Error saving {output_file}: {str(e)}")
+        print(f"[{get_current_timestamp()}] [ERROR] Failed to save {output_file}: {str(e)}")
         return None, (0, 0, 0.0)
 
 
 def load_lucc_data():
     """加载LUCC数据到内存"""
     lucc_file = PATHS["lucc"]
-    step_name = "LUCC_LOAD"
     if not os.path.exists(lucc_file):
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] LUCC file not found: {lucc_file}")
+        print(f"[{get_current_timestamp()}] [ERROR] LUCC file not found: {lucc_file}")
         return None
 
     try:
         with nc.Dataset(lucc_file) as ds:
-            # 使用正确的变量名 'Station'（大写）
             station_var = ds.variables['Station']
             station_data = station_var[:]
             # 处理不同格式的站点数据
@@ -429,28 +390,21 @@ def load_lucc_data():
             if isinstance(lucc_values, np.ma.MaskedArray):
                 lucc_values = lucc_values.filled(255)
 
-            # 计算有效性
-            valid, total, ratio = calculate_data_validity(lucc_values)
-            print(f"[{get_current_timestamp()}] [STEP:{step_name}] LUCC data loaded: "
-                  f"{valid}/{total} valid values ({ratio:.2%})")
-
             return dict(zip(stations, lucc_values))
     except Exception as e:
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] Error loading LUCC data: {str(e)}")
+        print(f"[{get_current_timestamp()}] [ERROR] Failed to load LUCC data: {str(e)}")
         return None
 
 
 def load_station_coords():
     """从LUTs.nc文件加载站点经纬度信息"""
     luts_file = PATHS["luts"]
-    step_name = "COORDS_LOAD"
     if not os.path.exists(luts_file):
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] LUTs file not found: {luts_file}")
+        print(f"[{get_current_timestamp()}] [ERROR] LUTs file not found: {luts_file}")
         return {}
 
     try:
         with nc.Dataset(luts_file) as ds:
-            # 使用正确的变量名 'Station'（大写）
             station_var = ds.variables['Station']
             station_data = station_var[:]
             # 处理不同格式的站点数据
@@ -471,77 +425,101 @@ def load_station_coords():
             if isinstance(lons, np.ma.MaskedArray):
                 lons = lons.filled(np.nan)
 
-            # 计算有效性
-            lat_valid = np.count_nonzero(~np.isnan(lats))
-            lon_valid = np.count_nonzero(~np.isnan(lons))
-            total = len(lats)
-
-            print(f"[{get_current_timestamp()}] [STEP:{step_name}] Station coordinates loaded: "
-                  f"Lat: {lat_valid}/{total} valid, Lon: {lon_valid}/{total} valid")
-
             return {station: (lat, lon) for station, lat, lon in zip(stations, lats, lons)}
     except Exception as e:
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] Error loading station coordinates: {str(e)}")
+        print(f"[{get_current_timestamp()}] [ERROR] Failed to load station coordinates: {str(e)}")
         return {}
 
 
-def test_main():
-    """单线程测试函数，处理3个指定时间点"""
+def main():
+    """主函数：并行处理日期范围"""
     start_time = time.time()
-    initialize_sixs()  # 初始化6S对象
+    print(f"[{get_current_timestamp()}] [START] Processing started")
 
     # 创建输出目录
     os.makedirs(PATHS["output"], exist_ok=True)
 
-    # 步骤1: 加载站点坐标
-    step_name = "INIT_COORDS"
-    print(f"[{get_current_timestamp()}] [STEP:{step_name}] Loading station coordinates...")
+    # 加载站点坐标
+    print(f"[{get_current_timestamp()}] [INFO] Loading station coordinates...")
     station_coords = load_station_coords()
     if not station_coords:
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] Failed to load station coordinates. Exiting.")
+        print(f"[{get_current_timestamp()}] [ERROR] Failed to load station coordinates. Exiting.")
         return
     stations_list = list(station_coords.keys())
-    print(f"[{get_current_timestamp()}] [STEP:{step_name}] Loaded {len(stations_list)} stations")
+    print(f"[{get_current_timestamp()}] [INFO] Loaded {len(stations_list)} stations")
 
-    # 步骤2: 加载LUCC数据
-    step_name = "INIT_LUCC"
-    print(f"[{get_current_timestamp()}] [STEP:{step_name}] Loading LUCC data...")
+    # 加载LUCC数据
+    print(f"[{get_current_timestamp()}] [INFO] Loading LUCC data...")
     lucc_dict = load_lucc_data()
     if lucc_dict is None:
-        print(f"[{get_current_timestamp()}] [STEP:{step_name}] Failed to load LUCC data. Exiting.")
+        print(f"[{get_current_timestamp()}] [ERROR] Failed to load LUCC data. Exiting.")
         return
 
-    # 处理3个指定时间点 (2015-07-07 的 00:00, 10:00, 20:00)
-    target_date = datetime(2015, 7, 7)
-    target_hours = [0, 10, 20]
+    # 生成日期列表
+    date_list = []
+    current_date = START_DATE
+    while current_date <= END_DATE:
+        date_list.append(current_date)
+        current_date += timedelta(days=1)
 
+    print(
+        f"[{get_current_timestamp()}] [INFO] Processing {len(date_list)} days from {START_DATE.date()} to {END_DATE.date()}")
+    print(f"[{get_current_timestamp()}] [INFO] Processing hours: {PROCESS_HOURS}")
+
+    # 准备所有任务
+    tasks = []
+    for date in date_list:
+        for hour in PROCESS_HOURS:
+            tasks.append((date, hour, stations_list, lucc_dict, station_coords))
+
+    print(f"[{get_current_timestamp()}] [INFO] Total tasks: {len(tasks)}")
+
+    # 使用多进程处理
+    processed_files = []
     total_valid = 0
     total_stations = 0
-    processed_files = []
 
-    for hour in target_hours:
-        print(f"[{get_current_timestamp()}] Processing hour: {hour:02d}00")
-        output_file, (valid, total, ratio) = process_hour(target_date, hour, stations_list, lucc_dict, station_coords)
-        if output_file:
-            processed_files.append(output_file)
-            total_valid += valid
-            total_stations += total
+    # 使用进程池
+    max_workers = max(1, os.cpu_count() // 2)
+    max_workers = 8
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for task in tasks:
+            date, hour, stations_list, lucc_dict, station_coords = task
+            future = executor.submit(process_hour, date, hour, stations_list, lucc_dict, station_coords)
+            futures[future] = (date, hour)
+
+        # 处理完成的任务
+        for future in as_completed(futures):
+            date, hour = futures[future]
+            date_str = date.strftime("%Y%m%d")
+            hour_str = f"{hour * 100:04d}"
+            time_key = f"{date_str}_{hour_str}"
+
+            try:
+                output_file, (valid, total, ratio) = future.result()
+                if output_file:
+                    processed_files.append(output_file)
+                    total_valid += valid
+                    total_stations += total
+                    print(
+                        f"[{get_current_timestamp()}] [COMPLETED] Processed {time_key}: {valid}/{total} valid ({ratio:.2%})")
+                else:
+                    print(f"[{get_current_timestamp()}] [FAILED] Failed to process {time_key}")
+            except Exception as e:
+                print(f"[{get_current_timestamp()}] [ERROR] Error processing {time_key}: {str(e)}")
 
     # 最终统计
-    step_name = "FINAL_STATS"
     total_ratio = total_valid / total_stations if total_stations > 0 else 0
-    total_time = time.time() - start_time
+    total_time = (time.time() - start_time) / 3600  # 转换为小时
 
-    print(f"\n[{get_current_timestamp()}] [STEP:{step_name}] TEST PROCESSING SUMMARY")
-    print(f"  Processed {len(processed_files)} time points")
+    print(f"\n[{get_current_timestamp()}] [SUMMARY] Processing completed")
+    print(f"  Processed time points: {len(processed_files)}")
     print(f"  Total stations processed: {total_stations}")
     print(f"  Valid stations: {total_valid} ({total_ratio:.2%})")
-    if processed_files:
-        print(f"  Generated files: {', '.join(processed_files)}")
-    else:
-        print("  No files generated")
-    print(f"  Total processing time: {total_time:.2f} seconds")
+    print(f"  Total processing time: {total_time:.2f} hours")
 
 
 if __name__ == "__main__":
-    test_main()
+    main()
