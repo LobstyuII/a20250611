@@ -76,18 +76,26 @@ def setup_optimized_params(stats):
                 max_val = min(0.999, stats[band]['recommended_max'])  # 最大0.999
                 optimized_params[band] = (min_val, max_val)
 
-        # 设置LUCC类别
-        if 'lucc' in stats:
-            # 新增过滤：只保留占比>=2.5%的类别
-            lucc_categories = []
-            for category in stats['lucc']['categories']:
-                proportion = stats['lucc']['proportions'].get(str(category), 0)
-                if proportion >= 0.025:  # 2.5%阈值
-                    lucc_categories.append(category)
+                # 设置LUCC类别 - 添加频率过滤
+                if 'lucc' in stats:
+                    lucc_stats = stats['lucc']
+                    categories = lucc_stats['categories']
+                    frequencies = lucc_stats['frequencies']
 
-            # 移除无效类别（根据原始映射定义）
-            valid_categories = set(LUCC_TO_BRDF.keys())
-            lucc_categories = [c for c in lucc_categories if c in valid_categories]
+                    # 过滤频率低于2.5%的类别
+                    filtered_categories = []
+                    for cat, freq in zip(categories, frequencies):
+                        if freq >= 0.025:  # 2.5%阈值
+                            filtered_categories.append(cat)
+
+                    lucc_categories = sorted(filtered_categories)
+                    print(f"[{timestamp()}] 过滤后LUCC类别: {lucc_categories} (原始类别数: {len(categories)})")
+
+                    # 移除无效类别
+                    valid_categories = set(LUCC_TO_BRDF.keys())
+                    lucc_categories = [c for c in lucc_categories if c in valid_categories]
+                else:
+                    print(f"[{timestamp()}] [WARN] 统计中缺少LUCC数据")
 
     # 设置默认值（如果统计不可用）
     defaults = {
