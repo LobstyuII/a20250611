@@ -11,6 +11,7 @@ PATHS = {
     "hourly_toa": "D:/H8_data/Hourly_TOA_Angles/",
     "merra2": "D:/H8_data/MERRA2/",
     "merra2_aot550": "D:/H8_data/MERRA2_AOT550/",
+    "lucc": "D:/H8_data/LC_2015_2024.nc",  # 添加LUCC路径
     "output": "D:/H8_Data/Parameter_Analysis/"
 }
 
@@ -19,7 +20,7 @@ START_DATE = datetime(2016, 1, 1)
 END_DATE = datetime(2016, 12, 31)
 PROCESS_HOURS = list(range(0, 13)) + list(range(21, 24))
 
-# 要分析的参数
+# 要分析的参数 - 添加LUCC
 PARAMETERS = {
     "solar_zenith": {"values": [], "unit": "degrees", "physical_min": 0, "physical_max": 85},
     "view_zenith": {"values": [], "unit": "degrees", "physical_min": 0, "physical_max": 70},
@@ -28,11 +29,29 @@ PARAMETERS = {
     "water": {"values": [], "unit": "g/cm²", "physical_min": 0, "physical_max": 10},
     "ozone": {"values": [], "unit": "cm-atm", "physical_min": 0, "physical_max": 1},
     "toa_reflectance_band03": {"values": [], "unit": "dimensionless", "physical_min": 0, "physical_max": 1.2},
-    "toa_reflectance_band04": {"values": [], "unit": "dimensionless", "physical_min": 0, "physical_max": 1.2}
+    "toa_reflectance_band04": {"values": [], "unit": "dimensionless", "physical_min": 0, "physical_max": 1.2},
+    "lucc": {"values": [], "unit": "category", "physical_min": 1, "physical_max": 255}  # 添加LUCC参数
 }
 
 # 初始化目录
 os.makedirs(PATHS["output"], exist_ok=True)
+
+
+# 加载LUCC数据
+def load_lucc():
+    """加载LUCC数据并构建站点到LUCC的映射"""
+    try:
+        with nc.Dataset(PATHS["lucc"]) as ds:
+            stations = [str(s).strip() for s in ds.variables['Station'][:]]
+            lucc = ds.variables['LC_type1'][1, :]  # 使用2016年数据（索引1）
+            if isinstance(lucc, np.ma.MaskedArray):
+                lucc = lucc.filled(255)
+            lucc_dict = dict(zip(stations, lucc))
+            print(f"加载LUCC数据，共{len(lucc_dict)}个站点")
+            return lucc_dict
+    except Exception as e:
+        print(f"加载LUCC数据失败: {str(e)}")
+        return {}
 
 
 def load_netcdf(file_path, variables):
@@ -49,16 +68,29 @@ def load_netcdf(file_path, variables):
 
                 var_data = ds.variables[var][:]
 
-                if isinstance(var_data, np.ma.MaskedArray):
-                    var_data = var_data.filled(np.nan)
+                # 处理站点名称
+                if var == 'Station':
+                    if var_data.dtype.kind in ['S', 'U']:
+                        # 统一处理站点名称
+                        if var_data.dtype.kind == 'S':
+                            var_data = [s.decode('utf-8').strip() for s in var_data]
+                        else:
+                            var_data = [s.strip() for s in var_data]
+                    else:
+                        var_data = [str(s).strip() for s in var_data]
+                    data[var] = var_data
+                else:
+                    if isinstance(var_data, np.ma.MaskedArray):
+                        var_data = var_data.filled(np.nan)
 
-                # 处理MERRA2的缺失值
-                if var in ['AOT550', 'TO3', 'TQV']:
-                    var_data = np.where(var_data == -9999.0, np.nan, var_data)
+                    # 处理MERRA2的缺失值
+                    if var in ['AOT550', 'TO3', 'TQV']:
+                        var_data = np.where(var_data == -9999.0, np.nan, var_data)
 
-                data[var] = var_data
+                    data[var] = var_data
             return data
-    except:
+    except Exception as e:
+        print(f"加载{file_path}失败: {str(e)}")
         return None
 
 
@@ -76,7 +108,7 @@ def calculate_relative_azimuth(saa, soa):
     return min(rel_az, 180)  # 确保在0-180度之间
 
 
-def analyze_parameters(date, hour):
+def analyze_parameters(date, hour, lucc_dict):
     """分析单小时数据的参数分布"""
     date_str = date.strftime("%Y%m%d")
     hour_str = f"{hour * 100:04d}"
@@ -93,18 +125,25 @@ def analyze_parameters(date, hour):
     if not all(os.path.exists(p) for p in paths.values()):
         return
 
-    # 加载数据
-    hourly = load_netcdf(paths["toa"], ['SAZ', 'SAA', 'SOZ', 'SOA', 'Albedo_03', 'Albedo_04'])
-    merra2 = load_netcdf(paths["merra"], ['TO3', 'TQV'])
-    aot550_data = load_netcdf(paths["aot550"], ['AOT550'])
+    # 加载数据 - 添加'Station'变量
+    hourly = load_netcdf(paths["toa"], ['Station', 'SAZ', 'SAA', 'SOZ', 'SOA', 'Albedo_03', 'Albedo_04'])
+    merra2 = load_netcdf(paths["merra"], ['Station', 'TO3', 'TQV'])
+    aot550_data = load_netcdf(paths["aot550"], ['Station', 'AOT550'])
 
     if None in [hourly, merra2, aot550_data]:
         return
 
-    # 获取数据长度（假设所有文件中的站点数量相同）
-    n = len(hourly.get('SAZ', []))
+    # 获取站点列表
+    stations = hourly.get('Station', [])
+    n = len(stations)
 
     for i in range(n):
+        station = stations[i] if i < len(stations) else None
+
+        # 获取LUCC值
+        lucc_value = lucc_dict.get(station, 255) if station else 255
+        PARAMETERS["lucc"]["values"].append(lucc_value)
+
         # 获取角度
         soz = hourly.get('SOZ', [np.nan])[i]
         saz = hourly.get('SAZ', [np.nan])[i]
@@ -165,38 +204,55 @@ def calculate_statistics():
         if len(values) == 0:
             continue
 
-        # 基本统计
-        mean = np.nanmean(values)
-        std = np.nanstd(values)
-        min_val = np.nanmin(values)
-        max_val = np.nanmax(values)
+        # LUCC的特殊处理（分类变量）
+        if param == "lucc":
+            # 计算类别频率
+            unique, counts = np.unique(values, return_counts=True)
+            total = len(values)
+            frequencies = counts / total
 
-        # 95%置信区间
-        lower_bound = np.nanpercentile(values, 2.5)
-        upper_bound = np.nanpercentile(values, 97.5)
+            # 获取所有出现的类别
+            present_categories = unique.tolist()
 
-        # 物理边界
-        physical_min = data["physical_min"]
-        physical_max = data["physical_max"]
+            results[param] = {
+                "count": total,
+                "categories": [int(cat) for cat in present_categories],
+                "frequencies": frequencies.tolist(),
+                "unit": data["unit"]
+            }
+        else:
+            # 基本统计（连续变量）
+            mean = np.nanmean(values)
+            std = np.nanstd(values)
+            min_val = np.nanmin(values)
+            max_val = np.nanmax(values)
 
-        # 建议边界 - 取95%置信区间和物理边界的交集
-        recommended_min = max(lower_bound, physical_min)
-        recommended_max = min(upper_bound, physical_max)
+            # 95%置信区间
+            lower_bound = np.nanpercentile(values, 2.5)
+            upper_bound = np.nanpercentile(values, 97.5)
 
-        results[param] = {
-            "count": len(values),
-            "mean": float(mean),
-            "std": float(std),
-            "min": float(min_val),
-            "max": float(max_val),
-            "95_lower": float(lower_bound),
-            "95_upper": float(upper_bound),
-            "physical_min": physical_min,
-            "physical_max": physical_max,
-            "recommended_min": float(recommended_min),
-            "recommended_max": float(recommended_max),
-            "unit": data["unit"]
-        }
+            # 物理边界
+            physical_min = data["physical_min"]
+            physical_max = data["physical_max"]
+
+            # 建议边界 - 取95%置信区间和物理边界的交集
+            recommended_min = max(lower_bound, physical_min)
+            recommended_max = min(upper_bound, physical_max)
+
+            results[param] = {
+                "count": len(values),
+                "mean": float(mean),
+                "std": float(std),
+                "min": float(min_val),
+                "max": float(max_val),
+                "95_lower": float(lower_bound),
+                "95_upper": float(upper_bound),
+                "physical_min": physical_min,
+                "physical_max": physical_max,
+                "recommended_min": float(recommended_min),
+                "recommended_max": float(recommended_max),
+                "unit": data["unit"]
+            }
 
     return results
 
@@ -212,39 +268,63 @@ def plot_distributions(results):
         if len(values) == 0:
             continue
 
-        plt.figure(figsize=(10, 6))
+        # LUCC的特殊处理（绘制类别频率图）
+        if param == "lucc":
+            plt.figure(figsize=(12, 6))
+            categories = stats["categories"]
+            freqs = stats["frequencies"]
 
-        # 直方图
-        plt.hist(values, bins=100, alpha=0.7, density=True, label="Distribution")
+            # 创建柱状图
+            plt.bar(range(len(categories)), freqs, tick_label=categories)
+            plt.title(f"LUCC Category Distribution (n={stats['count']})")
+            plt.xlabel("LUCC Category")
+            plt.ylabel("Frequency")
+            plt.grid(axis='y', alpha=0.3)
+            plt.xticks(rotation=45)
 
-        # KDE曲线
-        try:
-            kde = stats.gaussian_kde(values)
-            x = np.linspace(min(values), max(values), 1000)
-            plt.plot(x, kde(x), 'r-', linewidth=2, label="KDE")
-        except:
-            pass
+            # 保存图像
+            plt.savefig(os.path.join(output_dir, f"{param}_distribution.png"), bbox_inches='tight')
+            plt.close()
+        else:
+            plt.figure(figsize=(10, 6))
 
-        # 标注关键值
-        plt.axvline(stats["95_lower"], color='g', linestyle='--', label="95% Lower")
-        plt.axvline(stats["95_upper"], color='g', linestyle='--', label="95% Upper")
-        plt.axvline(stats["recommended_min"], color='r', linestyle='-', label="Rec Min")
-        plt.axvline(stats["recommended_max"], color='r', linestyle='-', label="Rec Max")
+            # 直方图
+            plt.hist(values, bins=100, alpha=0.7, density=True, label="Distribution")
 
-        plt.title(f"{param} Distribution (n={stats['count']:,})")
-        plt.xlabel(f"{param} ({stats['unit']})")
-        plt.ylabel("Density")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+            # KDE曲线
+            try:
+                kde = stats.gaussian_kde(values)
+                x = np.linspace(min(values), max(values), 1000)
+                plt.plot(x, kde(x), 'r-', linewidth=2, label="KDE")
+            except:
+                pass
 
-        # 保存图像
-        plt.savefig(os.path.join(output_dir, f"{param}_distribution.png"), bbox_inches='tight')
-        plt.close()
+            # 标注关键值
+            plt.axvline(stats["95_lower"], color='g', linestyle='--', label="95% Lower")
+            plt.axvline(stats["95_upper"], color='g', linestyle='--', label="95% Upper")
+            plt.axvline(stats["recommended_min"], color='r', linestyle='-', label="Rec Min")
+            plt.axvline(stats["recommended_max"], color='r', linestyle='-', label="Rec Max")
+
+            plt.title(f"{param} Distribution (n={stats['count']:,})")
+            plt.xlabel(f"{param} ({stats['unit']})")
+            plt.ylabel("Density")
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+
+            # 保存图像
+            plt.savefig(os.path.join(output_dir, f"{param}_distribution.png"), bbox_inches='tight')
+            plt.close()
 
 
 def main():
     """主分析函数"""
     print("开始分析2016年参数分布...")
+
+    # 加载LUCC数据
+    lucc_dict = load_lucc()
+    if not lucc_dict:
+        print("警告: 无法加载LUCC数据，将使用默认值255")
+        lucc_dict = {}
 
     # 生成日期列表
     dates = []
@@ -259,7 +339,7 @@ def main():
 
     for date in dates:
         for hour in PROCESS_HOURS:
-            analyze_parameters(date, hour)
+            analyze_parameters(date, hour, lucc_dict)
             processed += 1
 
             # 每处理10个文件打印一次进度
@@ -282,9 +362,24 @@ def main():
     print("{:<25} {:<15} {:<15} {:<15}".format("Parameter", "Recommended Min", "Recommended Max", "Unit"))
     print("-" * 60)
     for param, stats in results.items():
-        print("{:<25} {:<15.4f} {:<15.4f} {:<15}".format(
-            param, stats["recommended_min"], stats["recommended_max"], stats["unit"]))
+        if param == "lucc":
+            # LUCC的特殊输出（类别列表）
+            print("{:<25} {:<15} {:<15} {:<15}".format(
+                param,
+                f"Categories: {len(stats['categories'])}",
+                f"Min: {min(stats['categories'])}",
+                stats["unit"]))
+        else:
+            print("{:<25} {:<15.4f} {:<15.4f} {:<15}".format(
+                param, stats["recommended_min"], stats["recommended_max"], stats["unit"]))
     print("=" * 60)
+
+    # 单独打印LUCC类别频率
+    if "lucc" in results:
+        print("\nLUCC类别频率:")
+        print("Category\tFrequency")
+        for cat, freq in zip(results["lucc"]["categories"], results["lucc"]["frequencies"]):
+            print(f"{cat}\t\t{freq:.4f}")
 
     print(f"\n分析完成! 结果保存至: {PATHS['output']}")
 

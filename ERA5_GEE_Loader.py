@@ -32,27 +32,18 @@ def GEE_authorizing():
         raise
 
 
-def read_luts_nc(luts_path):
-    """从LUTs.nc文件中读取站点和时间信息"""
+def read_luts_stations(luts_path):
+    """从LUTs.nc文件中读取站点信息（不包括时间）"""
     try:
         ds = xr.open_dataset(luts_path)
         logging.info(f"成功读取 LUTs.nc 文件")
 
-        # 获取站点和时间信息
+        # 获取站点信息
         stations = ds['Station'].values
         lats = ds['Lat'].values
         lons = ds['Lon'].values
-        times = ds['time'].values
 
-        # 筛选整点时间（小时）
-        hourly_times = []
-        for t in times:
-            # 转换为 pandas Timestamp 对象
-            dt = pd.Timestamp(t)
-            if dt.minute == 0 and dt.second == 0:
-                hourly_times.append(dt.to_pydatetime())  # 转换为 Python datetime 对象
-
-        return stations, lats, lons, hourly_times
+        return stations, lats, lons
 
     except Exception as e:
         logging.error(f"读取 LUTs.nc 文件失败: {e}")
@@ -221,6 +212,28 @@ def process_hourly_data(dt, collection, bands, poi_fc, stations, lats, lons, bas
                 return False
 
 
+def generate_hourly_times(start_date, end_date):
+    """生成指定日期范围内的所有整点时间"""
+    hourly_times = []
+
+    # 确保日期是datetime.date对象
+    if isinstance(start_date, str):
+        start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+    if isinstance(end_date, str):
+        end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    # 将开始日期转换为datetime对象（包含时间）
+    current_dt = datetime.datetime.combine(start_date, datetime.time(0, 0))
+    end_dt = datetime.datetime.combine(end_date, datetime.time(23, 0))
+
+    # 生成所有整点时间
+    while current_dt <= end_dt:
+        hourly_times.append(current_dt)
+        current_dt += datetime.timedelta(hours=1)
+
+    return hourly_times
+
+
 def main():
     # 初始化 GEE
     GEE_authorizing()
@@ -229,9 +242,17 @@ def main():
     data_path = "D:/H8_data"
     luts_path = os.path.join(data_path, "LUTs.nc")
 
-    # 读取LUTs.nc文件
-    stations, lats, lons, hourly_times = read_luts_nc(luts_path)
-    logging.info(f"共读取 {len(stations)} 个站点，{len(hourly_times)} 个整点时间")
+    # 1. 读取LUTs.nc文件获取站点信息
+    stations, lats, lons = read_luts_stations(luts_path)
+    logging.info(f"共读取 {len(stations)} 个站点")
+
+    # 2. 明码指定时间范围
+    start_date = datetime.date(2015, 7, 7)
+    end_date = datetime.date(2024, 12, 31)
+
+    # 3. 生成整点时间列表
+    hourly_times = generate_hourly_times(start_date, end_date)
+    logging.info(f"生成时间范围: {start_date} 到 {end_date}, 共 {len(hourly_times)} 个整点时间")
 
     # 创建FeatureCollection
     poi_fc = get_feature_collection(stations, lats, lons)
@@ -246,12 +267,11 @@ def main():
         'u_component_of_wind_10m',
         'v_component_of_wind_10m'
     ]
+    logging.info("ERA5 数据集加载成功")
 
     # 准备任务队列
     tasks = []
     for dt in hourly_times:
-        # 检查文件是否已存在
-        # 转换 numpy.datetime64 为 Python datetime
         if isinstance(dt, np.datetime64):
             py_dt = pd.Timestamp(dt).to_pydatetime()
         else:
@@ -262,7 +282,7 @@ def main():
         filename = f"ERA5_{py_dt.strftime('%Y%m%d_%H%M')}.nc"
         file_path = os.path.join(data_path, "ERA5", year, month, filename)
 
-        # 如果文件不存在或不完整，则加入任务队列
+        # 检查文件是否需要下载
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 1024:
             tasks.append(dt)
 
@@ -276,7 +296,7 @@ def main():
     # 设置并行线程数（GEE限制为10）
     max_workers = 8
 
-    with tqdm(total=total_tasks, desc="下载进度") as pbar:
+    with tqdm(total=total_tasks, desc="下载ERA5数据") as pbar:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交所有任务
             futures = {executor.submit(

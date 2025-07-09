@@ -22,7 +22,7 @@ PATHS = {
 
 # 处理范围（根据主机分配任务）
 START_DATE = datetime(2015, 7, 7)
-END_DATE = datetime(2016, 12, 31)
+END_DATE = datetime(2021, 12, 31)
 PROCESS_HOURS = list(range(0, 13)) + list(range(21, 24))
 
 # 主机任务分配（示例：主机1处理前半部分，主机2处理后半部分）

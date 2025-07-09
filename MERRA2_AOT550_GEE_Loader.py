@@ -252,7 +252,7 @@ def main():
 
     # 2. 明码指定时间范围
     start_date = datetime.date(2015, 7, 7)
-    end_date = datetime.date(2021, 12, 31)
+    end_date = datetime.date(2024, 12, 31)
 
     # 3. 生成整点时间列表
     hourly_times = generate_hourly_times(start_date, end_date)

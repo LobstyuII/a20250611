@@ -1,7 +1,23 @@
 # python 6S_building_LUTs.py --shard-id 0 --total-shards 20 # 0709 9000p
-# python 6S_building_LUTs.py --shard-id 1 --total-shards 20 # 0709 gao
+# python 6S_building_LUTs.py --shard-id 1 --total-shards 20 # 0709 9000p
 # python 6S_building_LUTs.py --shard-id 2 --total-shards 20
 # python 6S_building_LUTs.py --shard-id 3 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 4 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 5 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 6 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 7 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 8 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 9 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 10 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 11 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 12 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 13 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 14 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 15 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 16 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 17 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 18 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 19 --total-shards 20
 
 import os
 import time
@@ -12,54 +28,92 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from Py6S import *
 import multiprocessing
 import argparse
+from multiprocessing import shared_memory
+import json
+import ctypes
 
 # 配置参数
 PATHS = {
-    "lut_cache": "D:/H8_data/LUT_Cache/"
+    "lut_cache": "D:/H8_data/LUT_Cache/",
+    "parameter_stats": "D:/H8_Data/Parameter_Analysis/parameter_statistics.json"  # 参数统计文件路径
 }
 os.makedirs(PATHS["lut_cache"], exist_ok=True)
 
-# 基于2016年分析结果优化的参数边界
-OPTIMIZED_PARAMS = {
-    'solar_zenith': (13.12, 83.30),  # 太阳天顶角 (度)
-    'view_zenith': (38.99, 58.86),  # 观测天顶角 (度)
-    'relative_azimuth': (3.82, 165.01),  # 相对方位角 (度)
-    'aot550': (0.0511, 1.4357),  # AOD 550nm
-    'water': (0.1974, 6.5669),  # 水汽含量 (g/cm²)
-    'ozone': (0.2354, 0.4020),  # 臭氧含量 (cm-atm)
-    'toa_reflectance': (0.0, 1.0)  # TOA反射率
-}
 
-LUT_PARAMS = {
-    'solar_zenith': np.linspace(OPTIMIZED_PARAMS['solar_zenith'][0],
-                                OPTIMIZED_PARAMS['solar_zenith'][1], 12),
-    'view_zenith': np.linspace(OPTIMIZED_PARAMS['view_zenith'][0],
-                               OPTIMIZED_PARAMS['view_zenith'][1], 10),
-    'relative_azimuth': np.linspace(OPTIMIZED_PARAMS['relative_azimuth'][0],
-                                    OPTIMIZED_PARAMS['relative_azimuth'][1], 12),
-    'aot550': np.array([
-        OPTIMIZED_PARAMS['aot550'][0],
-        0.1,
-        0.3,
-        0.7,
-        OPTIMIZED_PARAMS['aot550'][1]
-    ]),
-    'water': np.array([
-        OPTIMIZED_PARAMS['water'][0],
-        0.5,
-        1.0,
-        3.0,
-        OPTIMIZED_PARAMS['water'][1]
-    ]),
-    'ozone': np.array([
-        OPTIMIZED_PARAMS['ozone'][0],
-        (OPTIMIZED_PARAMS['ozone'][0] + OPTIMIZED_PARAMS['ozone'][1])/2,
-        OPTIMIZED_PARAMS['ozone'][1]
-    ]),
-    'toa_reflectance': np.linspace(OPTIMIZED_PARAMS['toa_reflectance'][0],
-                                   OPTIMIZED_PARAMS['toa_reflectance'][1], 10),
-    'bands': [0.64, 0.86]
-}
+# 从JSON文件加载参数统计
+def load_parameter_statistics():
+    """从JSON文件加载参数统计结果"""
+    try:
+        with open(PATHS["parameter_stats"], 'r') as f:
+            stats = json.load(f)
+            print(f"[{timestamp()}] 成功加载参数统计")
+            return stats
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] 加载参数统计失败: {str(e)}")
+        return None
+
+
+# 基于参数统计设置优化参数
+def setup_optimized_params(stats):
+    """基于统计结果设置优化参数"""
+    optimized_params = {}
+    lucc_categories = []
+
+    if stats:
+        # 设置连续参数的范围
+        for param in ['solar_zenith', 'view_zenith', 'relative_azimuth',
+                      'aot550', 'water', 'ozone']:
+            if param in stats:
+                optimized_params[param] = (
+                    stats[param]['recommended_min'],
+                    stats[param]['recommended_max']
+                )
+
+        # 设置TOA反射率范围 (开区间)
+        for band in ['toa_reflectance_band03', 'toa_reflectance_band04']:
+            if band in stats:
+                min_val = max(0.001, stats[band]['recommended_min'])  # 最小0.001
+                max_val = min(0.999, stats[band]['recommended_max'])  # 最大0.999
+                optimized_params[band] = (min_val, max_val)
+
+        # 设置LUCC类别
+        if 'lucc' in stats:
+            # 新增过滤：只保留占比>=2.5%的类别
+            lucc_categories = []
+            for category in stats['lucc']['categories']:
+                proportion = stats['lucc']['proportions'].get(str(category), 0)
+                if proportion >= 0.025:  # 2.5%阈值
+                    lucc_categories.append(category)
+
+            # 移除无效类别（根据原始映射定义）
+            valid_categories = set(LUCC_TO_BRDF.keys())
+            lucc_categories = [c for c in lucc_categories if c in valid_categories]
+
+    # 设置默认值（如果统计不可用）
+    defaults = {
+        'solar_zenith': (13.12, 83.30),
+        'view_zenith': (38.99, 58.86),
+        'relative_azimuth': (3.82, 165.01),
+        'aot550': (0.0511, 1.4357),
+        'water': (0.1974, 6.5669),
+        'ozone': (0.2354, 0.4020),
+        'toa_reflectance_band03': (0.01, 0.99),
+        'toa_reflectance_band04': (0.01, 0.99)
+    }
+
+    for param, default in defaults.items():
+        if param not in optimized_params:
+            optimized_params[param] = default
+
+    # 如果没有有效的LUCC类别，使用所有定义的类别
+    if not lucc_categories:
+        lucc_categories = sorted(LUCC_TO_BRDF.keys())
+        # 移除无效类别
+        valid_categories = set(LUCC_TO_BRDF.keys())
+        lucc_categories = [c for c in lucc_categories if c in valid_categories]
+
+    return optimized_params, lucc_categories
+
 
 # BRDF参数映射
 LUCC_TO_BRDF = {
@@ -91,72 +145,62 @@ LATITUDE_TO_PROFILE = {
     (60, 90): {5: AtmosProfile.SubarcticWinter, 9: AtmosProfile.SubarcticSummer}
 }
 
+# 全局变量，将在main中初始化
+OPTIMIZED_PARAMS = None
+LUCC_CATEGORIES = None
+LUT_PARAMS = {}
+
 
 def timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def generate_lut_key(profile_type, brdf_params):
+def generate_lut_key(profile_type, lucc_value):
     """生成LUT的唯一标识键"""
     profile_str = str(profile_type).split('.')[-1]
-    brdf_str = "_".join([f"{k}={v}" for k, v in sorted(brdf_params.items())])
-    return f"{profile_str}_{brdf_str}"
+    return f"{profile_str}_LUCC{lucc_value}"
 
 
-def create_lut(profile_type, brdf_params):
-    """创建查找表(LUT)"""
-    lut_key = generate_lut_key(profile_type, brdf_params)
-    lut_file = os.path.join(PATHS["lut_cache"], f"{lut_key}.nc")
+def init_worker(shared_mem_name, lut_shape, bands):
+    """初始化工作进程"""
+    global shared_array, worker_bands
+    worker_bands = bands
 
-    if os.path.exists(lut_file):
-        print(f"[{timestamp()}] [LUT] 使用缓存: {lut_key}")
-        with nc.Dataset(lut_file) as ds:
-            return lut_key, ds['sr'][:]
+    # 连接到共享内存
+    try:
+        existing_shm = shared_memory.SharedMemory(name=shared_mem_name)
+        # 创建与共享内存关联的数组
+        shared_array = np.ndarray(lut_shape, dtype=np.float32, buffer=existing_shm.buf)
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] 工作进程初始化失败: {str(e)}")
+        raise
 
-    print(f"[{timestamp()}] [LUT] 生成LUT: {lut_key}")
-    s = SixS()
-    s.altitudes.set_sensor_custom_altitude(99)
-    s.aero_profile = AeroProfile.PredefinedType(AeroProfile.Continental)
-    s.atmos_profile = profile_type
 
-    # 设置BRDF模型
-    model = brdf_params["model"]
-    if model == "Rahman":
-        s.ground_reflectance = GroundReflectance.HomogeneousRahman(
-            brdf_params["intensity"], brdf_params["asymmetry"], brdf_params["structural"])
-    elif model == "Walthall":
-        s.ground_reflectance = GroundReflectance.HomogeneousWalthall(
-            brdf_params["param1"], brdf_params["param2"], brdf_params["param3"], brdf_params["albedo"])
-    else:  # Lambertian
-        s.ground_reflectance = GroundReflectance.HomogeneousLambertian(brdf_params["albedo"])
+def calculate_point(params, lucc_value, profile_type):
+    """计算单个参数点"""
+    sz, vz, az, aot, water, ozone, toa, idx_tuple = params
+    idx = tuple(int(i) for i in idx_tuple)  # 转换为整数元组
 
-    # 创建LUT数组
-    lut_shape = tuple(len(LUT_PARAMS[k]) for k in [
-        'solar_zenith', 'view_zenith', 'relative_azimuth',
-        'aot550', 'water', 'ozone', 'toa_reflectance'
-    ]) + (len(LUT_PARAMS['bands']),)
+    try:
+        # 创建独立的6S实例
+        s = SixS()
+        s.altitudes.set_sensor_custom_altitude(99)
+        s.aero_profile = AeroProfile.PredefinedType(AeroProfile.Continental)
+        s.atmos_profile = profile_type
 
-    lut_data = np.zeros(lut_shape, dtype=np.float32)
-    total_points = np.prod(lut_shape[:-1])
-    processed = 0
-    start_time = time.time()
+        # 设置BRDF模型 (基于LUCC值)
+        brdf_params = LUCC_TO_BRDF.get(lucc_value, LUCC_TO_BRDF[255])
+        model = brdf_params["model"]
+        if model == "Rahman":
+            s.ground_reflectance = GroundReflectance.HomogeneousRahman(
+                brdf_params["intensity"], brdf_params["asymmetry"], brdf_params["structural"])
+        elif model == "Walthall":
+            s.ground_reflectance = GroundReflectance.HomogeneousWalthall(
+                brdf_params["param1"], brdf_params["param2"], brdf_params["param3"], brdf_params["albedo"])
+        else:  # Lambertian
+            s.ground_reflectance = GroundReflectance.HomogeneousLambertian(brdf_params["albedo"])
 
-    # 创建参数网格
-    grid = np.array(np.meshgrid(
-        LUT_PARAMS['solar_zenith'],
-        LUT_PARAMS['view_zenith'],
-        LUT_PARAMS['relative_azimuth'],
-        LUT_PARAMS['aot550'],
-        LUT_PARAMS['water'],
-        LUT_PARAMS['ozone'],
-        LUT_PARAMS['toa_reflectance'],
-        indexing='ij'
-    )).T.reshape(-1, 7)
-
-    # 批量处理
-    for i, params in enumerate(grid):
-        sz, vz, az, aot, water, ozone, toa = params
-
+        # 设置几何和大气参数
         s.geometry = Geometry.User()
         s.geometry.solar_z = sz
         s.geometry.view_z = vz
@@ -165,34 +209,120 @@ def create_lut(profile_type, brdf_params):
         s.atmos_profile = AtmosProfile.UserWaterAndOzone(water, ozone)
         s.atmos_corr = AtmosCorr.AtmosCorrBRDFFromReflectance(toa)
 
-        band_results = []
-        for band in LUT_PARAMS['bands']:
+        # 计算所有波段
+        results = []
+        for band in worker_bands:
             s.wavelength = Wavelength(band)
-            try:
-                s.run()
-                band_results.append(s.outputs.pixel_reflectance)
-            except:
-                band_results.append(np.nan)
+            s.run()
+            results.append(s.outputs.pixel_reflectance)
 
-        # 计算索引位置
-        idx = tuple(
-            np.where(LUT_PARAMS[dim] == val)[0][0]
-            for dim, val in zip([
-                'solar_zenith', 'view_zenith', 'relative_azimuth',
-                'aot550', 'water', 'ozone', 'toa_reflectance'
-            ], params)
-        )
+        # 直接写入共享内存
+        for band_idx, result in enumerate(results):
+            shared_array[idx + (band_idx,)] = result
 
-        for band_idx, result in enumerate(band_results):
-            lut_data[idx + (band_idx,)] = result
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] 计算点失败: {str(e)}")
+        # 标记为NaN
+        for band_idx in range(len(worker_bands)):
+            shared_array[idx + (band_idx,)] = np.nan
 
-        # 进度更新
-        processed += 1
-        if processed % 100 == 0 or processed == total_points:
-            elapsed = time.time() - start_time
-            remaining = (total_points - processed) * (elapsed / processed) if processed > 0 else 0
-            print(f"[{timestamp()}] [LUT] 进度: {processed}/{total_points} "
-                  f"({processed / total_points * 100:.1f}%) - 剩余: {remaining:.0f}s")
+
+def create_lut(profile_type, lucc_value):
+    """创建查找表(LUT) - 优化并行版本"""
+    lut_key = generate_lut_key(profile_type, lucc_value)
+    lut_file = os.path.join(PATHS["lut_cache"], f"{lut_key}.nc")
+
+    if os.path.exists(lut_file):
+        print(f"[{timestamp()}] [LUT] 使用缓存: {lut_key}")
+        with nc.Dataset(lut_file) as ds:
+            return lut_key, ds['sr'][:]
+
+    print(f"[{timestamp()}] [LUT] 生成LUT: {lut_key}")
+
+    # 创建LUT数组
+    lut_shape = tuple(len(LUT_PARAMS[k]) for k in [
+        'solar_zenith', 'view_zenith', 'relative_azimuth',
+        'aot550', 'water', 'ozone', 'toa_reflectance'
+    ]) + (len(LUT_PARAMS['bands']),)
+
+    # 计算总内存大小
+    total_size = int(np.prod(lut_shape) * np.dtype(np.float32).itemsize)
+
+    # 创建共享内存
+    shm = shared_memory.SharedMemory(create=True, size=total_size)
+    shared_array = np.ndarray(lut_shape, dtype=np.float32, buffer=shm.buf)
+    shared_array[:] = np.nan  # 初始化为NaN
+
+    # 创建参数网格
+    param_names = [
+        'solar_zenith', 'view_zenith', 'relative_azimuth',
+        'aot550', 'water', 'ozone', 'toa_reflectance'
+    ]
+    mesh = np.meshgrid(*[LUT_PARAMS[k] for k in param_names], indexing='ij')
+
+    # 生成索引网格
+    index_mesh = np.indices(mesh[0].shape)
+    total_points = np.prod(mesh[0].shape)
+
+    # 准备任务参数
+    params_list = []
+    for idx in np.ndindex(mesh[0].shape):
+        params = [mesh[i][idx] for i in range(len(mesh))]
+        params.append(idx)  # 添加索引位置
+        params_list.append(params)
+
+    # 配置并行参数
+    num_cores = multiprocessing.cpu_count()
+    max_workers = min(4, num_cores)  # 限制每个LUT的并行度
+
+    # 使用进程池并行计算
+    start_time = time.time()
+    try:
+        with ProcessPoolExecutor(
+                max_workers=max_workers,
+                initializer=init_worker,
+                initargs=(shm.name, lut_shape, LUT_PARAMS['bands'])
+        ) as executor:
+            # 提交任务
+            futures = {}
+            for params in params_list:
+                # 提取索引位置（最后一个元素）
+                idx_tuple = params[-1]
+                # 提交任务
+                future = executor.submit(
+                    calculate_point,
+                    params,
+                    lucc_value,
+                    profile_type
+                )
+                futures[future] = idx_tuple
+
+            # 处理结果并显示进度
+            completed = 0
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                    completed += 1
+                    if completed % 100 == 0 or completed == total_points:
+                        elapsed = time.time() - start_time
+                        remaining = (total_points - completed) * (elapsed / completed) if completed > 0 else 0
+                        print(f"[{timestamp()}] [LUT] 进度: {completed}/{total_points} "
+                              f"({completed / total_points * 100:.1f}%) - 剩余: {remaining:.0f}s")
+                except Exception as e:
+                    print(f"[{timestamp()}] [ERROR] 计算失败: {str(e)}")
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] 并行计算失败: {str(e)}")
+        # 清理共享内存
+        shm.close()
+        shm.unlink()
+        raise
+
+    # 从共享内存复制结果
+    lut_data = np.copy(shared_array)
+
+    # 清理共享内存
+    shm.close()
+    shm.unlink()
 
     # 保存LUT
     ds = nc.Dataset(lut_file, 'w')
@@ -213,12 +343,6 @@ def create_lut(profile_type, brdf_params):
 
     print(f"[{timestamp()}] [LUT] LUT已保存: {lut_file}")
     return lut_key, lut_data
-
-
-def get_brdf_params(lucc_value):
-    """获取BRDF参数"""
-    lucc_int = int(lucc_value)
-    return LUCC_TO_BRDF.get(lucc_int, LUCC_TO_BRDF[255])
 
 
 def get_unique_profiles():
@@ -242,13 +366,13 @@ def print_optimized_params():
 
     # 更新点数信息以匹配新的LUT网格
     params_info = [
-        ("solar_zenith", "度", len(LUT_PARAMS['solar_zenith'])),  # 12点
-        ("view_zenith", "度", len(LUT_PARAMS['view_zenith'])),     # 10点
-        ("relative_azimuth", "度", len(LUT_PARAMS['relative_azimuth'])),  # 12点
-        ("aot550", "无单位", len(LUT_PARAMS['aot550'])),           # 5点
-        ("water", "g/cm²", len(LUT_PARAMS['water'])),             # 5点
-        ("ozone", "cm-atm", len(LUT_PARAMS['ozone'])),            # 3点
-        ("toa_reflectance", "无单位", len(LUT_PARAMS['toa_reflectance']))  # 11点
+        ("solar_zenith", "度", len(LUT_PARAMS['solar_zenith'])),
+        ("view_zenith", "度", len(LUT_PARAMS['view_zenith'])),
+        ("relative_azimuth", "度", len(LUT_PARAMS['relative_azimuth'])),
+        ("aot550", "无单位", len(LUT_PARAMS['aot550'])),
+        ("water", "g/cm²", len(LUT_PARAMS['water'])),
+        ("ozone", "cm-atm", len(LUT_PARAMS['ozone'])),
+        ("toa_reflectance", "无单位", len(LUT_PARAMS['toa_reflectance']))
     ]
 
     for param, unit, points in params_info:
@@ -258,10 +382,55 @@ def print_optimized_params():
 
     print("=" * 70)
     print(f"波段: {LUT_PARAMS['bands']} (μm)")
+    print(f"LUCC类别: {LUCC_CATEGORIES}")
     print("=" * 70)
 
 
+def initialize_lut_params():
+    """初始化LUT参数网格"""
+    global LUT_PARAMS, OPTIMIZED_PARAMS, LUCC_CATEGORIES
+
+    # 加载参数统计
+    stats = load_parameter_statistics()
+    OPTIMIZED_PARAMS, LUCC_CATEGORIES = setup_optimized_params(stats)
+
+    # 设置LUT网格参数
+    LUT_PARAMS = {
+        'solar_zenith': np.linspace(OPTIMIZED_PARAMS['solar_zenith'][0],
+                                    OPTIMIZED_PARAMS['solar_zenith'][1], 12),
+        'view_zenith': np.linspace(OPTIMIZED_PARAMS['view_zenith'][0],
+                                   OPTIMIZED_PARAMS['view_zenith'][1], 10),
+        'relative_azimuth': np.linspace(OPTIMIZED_PARAMS['relative_azimuth'][0],
+                                        OPTIMIZED_PARAMS['relative_azimuth'][1], 12),
+        'aot550': np.array([
+            OPTIMIZED_PARAMS['aot550'][0],
+            0.1,
+            0.3,
+            0.7,
+            OPTIMIZED_PARAMS['aot550'][1]
+        ]),
+        'water': np.array([
+            OPTIMIZED_PARAMS['water'][0],
+            0.5,
+            1.0,
+            3.0,
+            OPTIMIZED_PARAMS['water'][1]
+        ]),
+        'ozone': np.array([
+            OPTIMIZED_PARAMS['ozone'][0],
+            (OPTIMIZED_PARAMS['ozone'][0] + OPTIMIZED_PARAMS['ozone'][1]) / 2,
+            OPTIMIZED_PARAMS['ozone'][1]
+        ]),
+        'toa_reflectance': np.linspace(OPTIMIZED_PARAMS['toa_reflectance_band03'][0],
+                                       OPTIMIZED_PARAMS['toa_reflectance_band03'][1], 10),
+        'bands': [0.64, 0.86]
+    }
+
+
 def main():
+    # 初始化LUT参数
+    initialize_lut_params()
+
     # 新增：命令行参数解析
     parser = argparse.ArgumentParser(description='生成LUT分片')
     parser.add_argument('--shard-id', type=int, default=0,
@@ -273,14 +442,13 @@ def main():
     print(f"[{timestamp()}] 开始生成LUTs (分片 {args.shard_id}/{args.total_shards})")
     print_optimized_params()
 
-    # 获取所有可能的BRDF和大气廓线组合
+    # 获取所有可能的LUCC和大气廓线组合
     tasks = []
     unique_profiles = get_unique_profiles()
 
-    for lucc_value in set(LUCC_TO_BRDF.keys()):
-        brdf_params = get_brdf_params(lucc_value)
+    for lucc_value in LUCC_CATEGORIES:
         for profile in unique_profiles:
-            tasks.append((profile, brdf_params))
+            tasks.append((profile, lucc_value))
 
     # 新增：任务分片逻辑
     total_tasks = len(tasks)
@@ -297,7 +465,9 @@ def main():
 
     # 并行生成LUT
     completed = 0
-    with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+    # 减少外层并行度
+    max_outer_workers = max(1, multiprocessing.cpu_count() // 4)
+    with ProcessPoolExecutor(max_workers=max_outer_workers) as executor:
         futures = {executor.submit(create_lut, *task): task for task in tasks}
 
         for future in as_completed(futures):
@@ -312,4 +482,6 @@ def main():
 
 
 if __name__ == "__main__":
+    # 设置多进程启动方法
+    multiprocessing.set_start_method('spawn', force=True)
     main()
