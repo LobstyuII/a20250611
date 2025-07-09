@@ -1,4 +1,7 @@
-# python 6S_building_LUTs.py --shard-id 0 --total-shards 4
+# python 6S_building_LUTs.py --shard-id 0 --total-shards 4 0709 9000p
+# python 6S_building_LUTs.py --shard-id 1 --total-shards 4 0709 gao
+# python 6S_building_LUTs.py --shard-id 2 --total-shards 4
+# python 6S_building_LUTs.py --shard-id 3 --total-shards 4
 
 import os
 import time
