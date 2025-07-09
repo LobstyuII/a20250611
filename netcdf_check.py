@@ -100,7 +100,7 @@ def print_nc_file_details(file_path):
 
 if __name__ == "__main__":
     # 指定要查看的文件路径
-    file_path = r"D:/H8_data\NC_H08_20150708_0800_R21_FLDK.02401_02401.nc"
+    file_path = r"D:\H8_data\LUT_Cache\1_LUCC9_AOT0.05106627941131592_OZ0.23536465454101563.nc"
     # file_path = r"D:\H8_data\MODIS_NDVI\2015\07\MODIS_NDVI_20150708.nc"
     # file_path = r"D:\H8_data\H8SR\SR_20150707_0000.nc"
 

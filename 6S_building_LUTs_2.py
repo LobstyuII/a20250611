@@ -1,6 +1,6 @@
-# python 6S_building_LUTs.py --shard-id 0 --total-shards 3 # 0709 7000p
-# python 6S_building_LUTs.py --shard-id 1 --total-shards 3 # 0709 9000p
-# python 6S_building_LUTs.py --shard-id 2 --total-shards 3
+# python 6S_building_LUTs_2.py --shard-id 0 --total-shards 3 # 0709 7000p
+# python 6S_building_LUTs_2.py --shard-id 1 --total-shards 3 # 0709 9000p
+# python 6S_building_LUTs_2.py --shard-id 2 --total-shards 3
 
 
 
@@ -172,9 +172,10 @@ def init_worker(shared_mem_name, lut_shape, bands):
         raise
 
 
-def calculate_point(params, lucc_value, profile_type):
-    """计算单个参数点"""
-    sz, vz, az, aot, water, ozone, toa, idx_tuple = params
+def calculate_point(params, lucc_value, profile_type, fixed_aot, fixed_ozone):
+    """计算单个参数点 - 使用固定的AOT和臭氧值"""
+    # 现在params中只包含：sz, vz, az, water, toa, idx_tuple
+    sz, vz, az, water, toa, idx_tuple = params
     idx = tuple(int(i) for i in idx_tuple)  # 转换为整数元组
 
     try:
@@ -201,8 +202,10 @@ def calculate_point(params, lucc_value, profile_type):
         s.geometry.solar_z = sz
         s.geometry.view_z = vz
         s.geometry.relative_azimuth = az
-        s.aot550 = aot
-        s.atmos_profile = AtmosProfile.UserWaterAndOzone(water, ozone)
+
+        # 使用固定值替代原网格值
+        s.aot550 = fixed_aot
+        s.atmos_profile = AtmosProfile.UserWaterAndOzone(water, fixed_ozone)
         s.atmos_corr = AtmosCorr.AtmosCorrBRDFFromReflectance(toa)
 
         # 计算所有波段
@@ -223,9 +226,10 @@ def calculate_point(params, lucc_value, profile_type):
             shared_array[idx + (band_idx,)] = np.nan
 
 
-def create_lut(profile_type, lucc_value):
-    """创建查找表(LUT) - 优化并行版本"""
-    lut_key = generate_lut_key(profile_type, lucc_value)
+def create_lut(profile_type, lucc_value, aot_value, ozone_value):
+    """创建查找表(LUT) - 针对固定AOT550和臭氧值"""
+    # 生成LUT键名时包含固定参数
+    lut_key = f"{generate_lut_key(profile_type, lucc_value)}_AOT{aot_value}_OZ{ozone_value}"
     lut_file = os.path.join(PATHS["lut_cache"], f"{lut_key}.nc")
 
     if os.path.exists(lut_file):
@@ -233,12 +237,11 @@ def create_lut(profile_type, lucc_value):
         with nc.Dataset(lut_file) as ds:
             return lut_key, ds['sr'][:]
 
-    print(f"[{timestamp()}] [LUT] 生成LUT: {lut_key}")
+    print(f"[{timestamp()}] [LUT] 生成LUT切片: {lut_key}")
 
-    # 创建LUT数组
+    # 新LUT形状（移除了aot550和ozone）
     lut_shape = tuple(len(LUT_PARAMS[k]) for k in [
-        'solar_zenith', 'view_zenith', 'relative_azimuth',
-        'aot550', 'water', 'ozone', 'toa_reflectance'
+        'solar_zenith', 'view_zenith', 'relative_azimuth', 'water', 'toa_reflectance'
     ]) + (len(LUT_PARAMS['bands']),)
 
     # 计算总内存大小
@@ -249,11 +252,8 @@ def create_lut(profile_type, lucc_value):
     shared_array = np.ndarray(lut_shape, dtype=np.float32, buffer=shm.buf)
     shared_array[:] = np.nan  # 初始化为NaN
 
-    # 创建参数网格
-    param_names = [
-        'solar_zenith', 'view_zenith', 'relative_azimuth',
-        'aot550', 'water', 'ozone', 'toa_reflectance'
-    ]
+    # 创建参数网格（仅变化维度）
+    param_names = ['solar_zenith', 'view_zenith', 'relative_azimuth', 'water', 'toa_reflectance']
     mesh = np.meshgrid(*[LUT_PARAMS[k] for k in param_names], indexing='ij')
 
     # 生成索引网格
@@ -284,12 +284,14 @@ def create_lut(profile_type, lucc_value):
             for params in params_list:
                 # 提取索引位置（最后一个元素）
                 idx_tuple = params[-1]
-                # 提交任务
+                # 提交任务，传入固定AOT和臭氧值
                 future = executor.submit(
                     calculate_point,
                     params,
                     lucc_value,
-                    profile_type
+                    profile_type,
+                    aot_value,  # 固定AOT值
+                    ozone_value  # 固定臭氧值
                 )
                 futures[future] = idx_tuple
 
@@ -303,7 +305,7 @@ def create_lut(profile_type, lucc_value):
                         elapsed = time.time() - start_time
                         remaining = (total_points - completed) * (elapsed / completed) if completed > 0 else 0
                         print(f"[{timestamp()}] [LUT] 进度: {completed}/{total_points} "
-                              f"({completed / total_points * 5:.1f}%) - 剩余: {remaining:.0f}s")
+                              f"({completed / total_points * 100:.1f}%) - 剩余: {remaining:.0f}s")
                 except Exception as e:
                     print(f"[{timestamp()}] [ERROR] 计算失败: {str(e)}")
     except Exception as e:
@@ -322,22 +324,26 @@ def create_lut(profile_type, lucc_value):
 
     # 保存LUT
     ds = nc.Dataset(lut_file, 'w')
-    for dim_name, values in LUT_PARAMS.items():
-        if dim_name == 'bands':
-            continue
-        dim = ds.createDimension(dim_name, len(values))
+
+    # 保存固定参数作为全局属性
+    ds.setncattr('fixed_aot550', aot_value)
+    ds.setncattr('fixed_ozone', ozone_value)
+
+    # 保存维度变量
+    for dim_name in ['solar_zenith', 'view_zenith', 'relative_azimuth', 'water', 'toa_reflectance']:
+        dim = ds.createDimension(dim_name, len(LUT_PARAMS[dim_name]))
         var = ds.createVariable(dim_name, 'f4', (dim_name,))
-        var[:] = values
+        var[:] = LUT_PARAMS[dim_name]
 
     band_dim = ds.createDimension('band', len(LUT_PARAMS['bands']))
     band_var = ds.createVariable('band', 'f4', ('band',))
     band_var[:] = LUT_PARAMS['bands']
 
-    sr_var = ds.createVariable('sr', 'f4', tuple(LUT_PARAMS.keys())[:-1] + ('band',))
+    sr_var = ds.createVariable('sr', 'f4', tuple(param_names) + ('band',))
     sr_var[:] = lut_data
     ds.close()
 
-    print(f"[{timestamp()}] [LUT] LUT已保存: {lut_file}")
+    print(f"[{timestamp()}] [LUT] LUT切片已保存: {lut_file}")
     return lut_key, lut_data
 
 
@@ -396,7 +402,7 @@ def initialize_lut_params():
 
     # 确保所有必要键都存在 - 修正键名
     required_keys = ['solar_zenith', 'view_zenith', 'relative_azimuth',
-                     'aot550', 'water', 'ozone', 'toa_reflectance_band03']  # 改为正确的键名
+                     'aot550', 'water', 'ozone', 'toa_reflectance_band03']
 
     for key in required_keys:
         if key not in OPTIMIZED_PARAMS:
@@ -423,6 +429,7 @@ def initialize_lut_params():
                                    OPTIMIZED_PARAMS['view_zenith'][1], 10),
         'relative_azimuth': np.linspace(OPTIMIZED_PARAMS['relative_azimuth'][0],
                                         OPTIMIZED_PARAMS['relative_azimuth'][1], 12),
+        # 正确定义AOT550和臭氧值
         'aot550': np.array([
             OPTIMIZED_PARAMS['aot550'][0],
             0.1,
@@ -450,6 +457,7 @@ def initialize_lut_params():
     LUT_PARAMS_INITIALIZED = True  # 标记已初始化
 
 
+
 def init_outer_worker():
     """子进程初始化函数"""
     global LUT_PARAMS
@@ -461,7 +469,7 @@ def main():
     # 初始化LUT参数
     initialize_lut_params()
 
-    # 新增：命令行参数解析
+    # 命令行参数解析
     parser = argparse.ArgumentParser(description='生成LUT分片')
     parser.add_argument('--shard-id', type=int, default=0,
                         help='当前分片的ID (0到total-shards-1)')
@@ -472,15 +480,19 @@ def main():
     print(f"[{timestamp()}] 开始生成LUTs (分片 {args.shard_id}/{args.total_shards})")
     print_optimized_params()
 
-    # 获取所有可能的LUCC和大气廓线组合
+    # 获取所有可能的组合：LUCC × 大气廓线 × AOT550 × 臭氧
     tasks = []
-    unique_profiles = get_unique_profiles()
+    unique_profiles = get_unique_profiles()  # 正确定义unique_profiles
+    aot_values = LUT_PARAMS['aot550']  # 获取AOT550的取值
+    ozone_values = LUT_PARAMS['ozone']  # 获取臭氧的取值
 
     for lucc_value in LUCC_CATEGORIES:
         for profile in unique_profiles:
-            tasks.append((profile, lucc_value))
+            for aot in aot_values:
+                for ozone in ozone_values:
+                    tasks.append((profile, lucc_value, aot, ozone))
 
-    # 新增：任务分片逻辑
+    # 分片逻辑
     total_tasks = len(tasks)
     shard_size = total_tasks // args.total_shards
     start_idx = args.shard_id * shard_size
@@ -507,9 +519,9 @@ def main():
             try:
                 lut_key, _ = future.result()
                 completed += 1
-                print(f"[{timestamp()}] [{completed}/{len(tasks)}] LUT完成: {lut_key}")
+                print(f"[{timestamp()}] [{completed}/{len(tasks)}] LUT切片完成: {lut_key}")
             except Exception as e:
-                print(f"[{timestamp()}] [ERROR] LUT生成失败: {str(e)}")
+                print(f"[{timestamp()}] [ERROR] LUT切片生成失败: {str(e)}")
 
     print(f"[{timestamp()}] 分片 {args.shard_id}/{args.total_shards} 完成")
 
