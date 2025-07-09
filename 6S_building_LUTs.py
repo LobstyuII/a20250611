@@ -1,7 +1,7 @@
-# python 6S_building_LUTs.py --shard-id 0 --total-shards 4 0709 9000p
-# python 6S_building_LUTs.py --shard-id 1 --total-shards 4 0709 gao
-# python 6S_building_LUTs.py --shard-id 2 --total-shards 4
-# python 6S_building_LUTs.py --shard-id 3 --total-shards 4
+# python 6S_building_LUTs.py --shard-id 0 --total-shards 20 # 0709 9000p
+# python 6S_building_LUTs.py --shard-id 1 --total-shards 20 # 0709 gao
+# python 6S_building_LUTs.py --shard-id 2 --total-shards 20
+# python 6S_building_LUTs.py --shard-id 3 --total-shards 20
 
 import os
 import time
@@ -240,14 +240,15 @@ def print_optimized_params():
         "参数", "最小值", "最大值", "点数", "单位"))
     print("-" * 70)
 
+    # 更新点数信息以匹配新的LUT网格
     params_info = [
-        ("solar_zenith", "度", 9),
-        ("view_zenith", "度", 8),
-        ("relative_azimuth", "度", 10),
-        ("aot550", "无单位", 4),
-        ("water", "g/cm²", 4),
-        ("ozone", "cm-atm", 2),
-        ("toa_reflectance", "无单位", 11)
+        ("solar_zenith", "度", len(LUT_PARAMS['solar_zenith'])),  # 12点
+        ("view_zenith", "度", len(LUT_PARAMS['view_zenith'])),     # 10点
+        ("relative_azimuth", "度", len(LUT_PARAMS['relative_azimuth'])),  # 12点
+        ("aot550", "无单位", len(LUT_PARAMS['aot550'])),           # 5点
+        ("water", "g/cm²", len(LUT_PARAMS['water'])),             # 5点
+        ("ozone", "cm-atm", len(LUT_PARAMS['ozone'])),            # 3点
+        ("toa_reflectance", "无单位", len(LUT_PARAMS['toa_reflectance']))  # 11点
     ]
 
     for param, unit, points in params_info:
