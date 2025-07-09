@@ -17,14 +17,14 @@ PATHS = {
     "luts": "D:/H8_data/LUTs.nc",
 }
 
-# 波段配置：只保留红色(R)和近红外(NIR)波段
-BAND_WAVELENGTHS = [0.64, 0.86]
-BAND_NAMES = ['Albedo_03', 'Albedo_04']
+# 波段配置
+BAND_WAVELENGTHS = [0.47, 0.51, 0.64, 0.86]
+BAND_NAMES = [f"Albedo_0{i + 1}" for i in range(0, 4)]
 ANGLE_NAMES = ['SAZ', 'SAA', 'SOZ', 'SOA']
 
 # 处理范围
 START_DATE = datetime(2015, 7, 7)
-END_DATE = datetime(2015, 7, 10)
+END_DATE = datetime(2016, 12, 31)
 PROCESS_HOURS = list(range(0, 13)) + list(range(21, 24))
 
 # LUCC到BRDF映射
@@ -146,10 +146,8 @@ def get_atmos_profile(lat, date):
             if isinstance(profile, dict):
                 month_group = 5 if date.month in range(5, 10) else 9
                 selected_profile = profile[month_group]
-                print(f"[{timestamp()}] [INFO] Selected profile {selected_profile} for lat {lat} in month {date.month}")
                 return AtmosProfile.PredefinedType(selected_profile)
             else:
-                print(f"[{timestamp()}] [INFO] Selected profile {profile} for lat {lat}")
                 return AtmosProfile.PredefinedType(profile)
 
     print(f"[{timestamp()}] [WARNING] No profile found for lat {lat}, using default")
@@ -160,12 +158,10 @@ def set_brdf_model(s, lucc_value):
     """设置BRDF模型"""
     try:
         lucc_int = int(lucc_value)
-
         params = LUCC_TO_BRDF.get(lucc_int, LUCC_TO_BRDF[255])
     except (ValueError, TypeError):
-        print(f"[{timestamp()}] [WARNING] Invalid LUCC value: {lucc_value}, using default")
         params = LUCC_TO_BRDF[255]
-    print("params = ", params)
+
     try:
         if params["model"] == "Rahman":
             s.ground_reflectance = GroundReflectance.HomogeneousRahman(
@@ -186,7 +182,6 @@ def set_brdf_model(s, lucc_value):
 def convert_merra2_units(to3, tqv):
     """转换MERRA2单位"""
     if np.isnan(to3) or np.isnan(tqv):
-        print(f"[{timestamp()}] [WARNING] Invalid MERRA2 values: TO3={to3}, TQV={tqv}")
         return np.nan, np.nan
 
     return to3 * 0.001, tqv * 0.1  # Dobson->cm-atm, kg/m²->g/cm²
@@ -199,7 +194,6 @@ def process_station(station_data):
 
     # 检查可用性
     if hourly['hourly_availability'][idx] != 0:
-        print(f"[{timestamp()}] [WARNING] Station {station} not available in hourly data")
         return station, 1, np.full(len(BAND_WAVELENGTHS), np.nan), 0
 
     # 获取大气参数
@@ -217,20 +211,17 @@ def process_station(station_data):
 
     # 验证角度数据
     if any(np.isnan(angles[a]) for a in ANGLE_NAMES):
-        print(f"[{timestamp()}] [WARNING] Station {station} has missing angles: {angles}")
         return station, 1, np.full(len(BAND_WAVELENGTHS), np.nan), 0
 
-    # 计算TOA反射率 - 只处理R和NIR两个波段
+    # 计算TOA反射率
     cos_soz = np.cos(np.radians(angles['SOZ']))
     if cos_soz <= 0.01:
-        print(f"[{timestamp()}] [WARNING] Invalid SOZ angle: {angles['SOZ']}, cos={cos_soz:.4f}")
         cos_soz = 0.01  # 防止除零错误
 
     toa_refs = []
-    for band in BAND_NAMES:  # 现在只包含两个波段：03和04
+    for band in BAND_NAMES:
         albedo = hourly.get(band, [np.nan])[idx] if idx < len(hourly.get(band, [])) else np.nan
         if np.isnan(albedo) or albedo < 0 or albedo > 1:
-            print(f"[{timestamp()}] [WARNING] Station {station} has invalid {band}: {albedo}")
             toa_ref = np.nan
         else:
             toa_ref = albedo / cos_soz
@@ -240,10 +231,9 @@ def process_station(station_data):
 
     # 如果所有TOA反射率无效，直接返回
     if all(np.isnan(r) for r in toa_refs):
-        print(f"[{timestamp()}] [WARNING] All TOA reflectances invalid for station {station}")
         return station, 1, np.full(len(BAND_WAVELENGTHS), np.nan), 0
 
-    # 执行6S大气校正 - 只处理两个波段
+    # 执行6S大气校正
     sr_results = np.full(len(BAND_WAVELENGTHS), np.nan, dtype=np.float32)
     valid_flag = 0
 
@@ -260,54 +250,37 @@ def process_station(station_data):
 
         # 设置大气参数
         if not np.isnan(water) and not np.isnan(ozone) and water > 0 and ozone > 0:
-            print(f"[{timestamp()}] [INFO] Using custom profile for station {station}: O3={ozone:.4f}, H2O={water:.4f}")
             s.atmos_profile = AtmosProfile.UserWaterAndOzone(water, ozone)
         else:
             profile = get_atmos_profile(lat, date)
-            print(f"[{timestamp()}] [INFO] Using predefined profile for station {station}: {profile}")
             s.atmos_profile = profile
 
         # 设置气溶胶 - 直接使用AOT550
         if not np.isnan(aot550) and aot550 >= 0:
-            print(f"[{timestamp()}] [INFO] Using AOT550={aot550:.4f} for station {station}")
             s.aot550 = aot550
         else:
-            print(f"[{timestamp()}] [WARNING] Invalid AOT550 for station {station}: {aot550}")
             s.aot550 = None
 
         # 设置BRDF
         lucc_value = lucc_dict.get(station, 255)
-        print("lucc_value = ", lucc_value)
-        print(f"[{timestamp()}] [INFO] Setting BRDF for station {station} with LUCC={lucc_value}")
         s = set_brdf_model(s, lucc_value)
 
-        # 处理每个波段 - 现在只处理两个波段
+        # 处理每个波段
         for i, (wvl, refl) in enumerate(zip(BAND_WAVELENGTHS, toa_refs)):
             if np.isnan(refl) or refl < 0 or refl > 1:
-                print(
-                    f"[{timestamp()}] [WARNING] Skipping band {wvl} for station {station}: invalid reflectance {refl}")
                 continue
 
             try:
-                print(f"[{timestamp()}] [INFO] Processing band {wvl} for station {station} with refl={refl:.4f}")
                 s.wavelength = Wavelength(wvl)
                 s.atmos_corr = AtmosCorr.AtmosCorrBRDFFromReflectance(refl)
                 s.run()
                 sr_results[i] = s.outputs.pixel_reflectance
-                print(f"[{timestamp()}] [SUCCESS] Band {wvl} result: {sr_results[i]:.6f}")
-            except Exception as e:
-                print(f"[{timestamp()}] [ERROR] Band {wvl} failed for station {station}: {str(e)}")
+            except Exception:
                 sr_results[i] = np.nan
 
         valid_flag = 1
-        print(f"[{timestamp()}] [SUCCESS] Processed station {station}: {sr_results}")
     except Exception as e:
         print(f"[{timestamp()}] [ERROR] Processing failed for station {station}: {str(e)}")
-        print(f"  Angles: {angles}")
-        print(f"  TOA Refl: {toa_refs}")
-        print(f"  Ozone: {ozone}, Water: {water}")
-        print(f"  AOT550: {aot550}")
-        print(f"  LUCC: {lucc_dict.get(station, 'N/A')}")
     finally:
         # 确保将SixS实例归还给对象池
         if 's' in locals():
@@ -342,7 +315,6 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
         return None, (0, 0, 0.0)
 
     # 加载数据
-    print(f"[{timestamp()}] [INFO] Loading data for {time_key}")
     hourly = load_netcdf(paths["toa"], ['Station'] + BAND_NAMES + ANGLE_NAMES + ['hourly_availability'])
     merra2 = load_netcdf(paths["merra"], ['Station', 'TO3', 'TQV'])
     aot550_data = load_netcdf(paths["aot550"], ['Station', 'AOT550'])  # 加载AOT550数据
@@ -356,9 +328,6 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
     merra2_stations = merra2.get('Station', [])
     aot_stations = aot550_data.get('Station', [])
 
-    print(
-        f"[{timestamp()}] [INFO] Stations: Hourly={len(hourly_stations)}, MERRA2={len(merra2_stations)}, AOT550={len(aot_stations)}")
-
     # 创建站点索引
     station_idx = {s: i for i, s in enumerate(hourly_stations)}
     matched = [s for s in stations if s in station_idx]
@@ -368,9 +337,7 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
         print(f"[{timestamp()}] [WARNING] No stations matched for {time_key}")
         return None, (0, 0, 0.0)
 
-    print(f"[{timestamp()}] [INFO] Matched stations: {len(matched)}/{len(stations)}")
-
-    # 初始化结果数组 - 只包含两个波段
+    # 初始化结果数组
     sr_results = np.full((len(stations), len(BAND_WAVELENGTHS)), np.nan, dtype=np.float32)
     gen_avail = np.full(len(stations), -1, dtype=np.int8)
     valid_flags = np.zeros(len(stations), dtype=np.int8)
@@ -391,7 +358,7 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
         valid_flags[sidx] = valid
         valid_count += valid
 
-    # 保存结果 - 只保存两个波段
+    # 保存结果
     try:
         os.makedirs(os.path.dirname(paths["output"]), exist_ok=True)
         with nc.Dataset(paths["output"], 'w') as ds:
@@ -409,7 +376,7 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
             valid_var = ds.createVariable('valid_flag', 'i1', ('station',))
             valid_var[:] = valid_flags
 
-            # 波段数据 - 只保存两个波段
+            # 波段数据
             for i, band in enumerate(BAND_NAMES):
                 band_var = ds.createVariable(band, 'f4', ('station',))
                 band_var[:] = sr_results[:, i]
@@ -417,10 +384,10 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
 
             # 元数据
             ds.date_created = timestamp()
-            ds.title = 'Himawari-8 Surface Reflectance (R and NIR only)'
+            ds.title = 'Himawari-8 Surface Reflectance'
             ds.time = hour_str
             ds.date = date_str
-            ds.source = "6S atmospheric correction for NDVI calculation"
+            ds.source = "6S atmospheric correction"
 
         ratio = valid_count / total_matched if total_matched > 0 else 0
         print(f"[{timestamp()}] [SUCCESS] Saved {paths['output']} - Valid: {valid_count}/{total_matched} ({ratio:.1%})")
@@ -439,7 +406,6 @@ def load_lucc():
             if isinstance(lucc, np.ma.MaskedArray):
                 lucc = lucc.filled(255)
             lucc_dict = dict(zip(stations, lucc))
-            print(f"[{timestamp()}] [INFO] Loaded LUCC for {len(lucc_dict)} stations")
             return lucc_dict
     except Exception as e:
         print(f"[{timestamp()}] [ERROR] LUCC load failed: {str(e)}")
@@ -461,7 +427,6 @@ def load_coords():
                 lons = lons.filled(np.nan)
 
             coords = {s: (lat, lon) for s, lat, lon in zip(stations, lats, lons)}
-            print(f"[{timestamp()}] [INFO] Loaded coordinates for {len(coords)} stations")
             return coords
     except Exception as e:
         print(f"[{timestamp()}] [ERROR] Coords load failed: {str(e)}")
@@ -477,14 +442,12 @@ def main():
     os.makedirs(PATHS["output"], exist_ok=True)
 
     # 加载基础数据
-    print(f"[{timestamp()}] [INFO] Loading station data...")
     station_coords = load_coords()
     if not station_coords:
         print(f"[{timestamp()}] [ERROR] No station coordinates")
         return
 
     stations = list(station_coords.keys())
-    print(f"[{timestamp()}] [INFO] Loaded {len(stations)} stations")
 
     lucc_dict = load_lucc()
     if not lucc_dict:
@@ -511,7 +474,7 @@ def main():
     total_valid = 0
     total_stations = 0
 
-    with ProcessPoolExecutor(max_workers=2) as executor:
+    with ProcessPoolExecutor(max_workers=min(8, os.cpu_count())) as executor:
         futures = {executor.submit(process_hour, *task): task for task in tasks}
 
         for future in as_completed(futures):

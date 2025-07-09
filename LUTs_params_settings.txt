@@ -1,0 +1,13 @@
+分析2016年参数分布,参数边界建议:
+============================================================
+Parameter                 Recommended Min Recommended Max Unit
+------------------------------------------------------------
+solar_zenith              13.1200         83.3000         degrees
+view_zenith               38.9900         58.8600         degrees
+relative_azimuth          3.8200          165.0100        degrees
+aot550                    0.0511          1.4357          dimensionless
+water                     0.1974          6.5669          g/cm²
+ozone                     0.2354          0.4020          cm-atm
+toa_reflectance_band03    0.0000          1.0390          dimensionless
+toa_reflectance_band04    0.0000          1.0810          dimensionless
+============================================================

@@ -417,7 +417,7 @@ def main():
         logger.info("创建新的缺失文件记录")
 
     # 设置日期范围和时间
-    start_date = datetime.date(2015, 7, 1)
+    start_date = datetime.date(2021, 1, 1)
     end_date = datetime.date(2021, 12, 31)
     hours = [*range(0, 13), *range(21, 24)]
     minutes = [0, 10, 20, 30, 40, 50]

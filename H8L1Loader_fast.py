@@ -376,9 +376,9 @@ def main():
     })
 
     # 设置日期范围和时间 - 修正为从2015年7月7日开始
-    start_date = datetime.date(2016, 10, 1)
-    end_date = datetime.date(2016, 12, 31)
-    hours = [*range(0, 13), *range(21, 23)]
+    start_date = datetime.date(2021, 1, 1)
+    end_date = datetime.date(2021, 12, 31)
+    hours = [*range(0, 13), *range(21, 24)]
     minutes = [0, 10, 20, 30, 40, 50]
 
     # 创建H8L1基础目录
@@ -413,7 +413,7 @@ def main():
 
         # 使用线程池并行下载和处理
         futures = []
-        with ThreadPoolExecutor(max_workers=28) as executor:
+        with ThreadPoolExecutor(max_workers=20) as executor:
             for date, hour, minute in tasks:
                 future = executor.submit(
                     download_and_process, date, hour, minute, lookup_df, Data_path

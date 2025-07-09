@@ -92,11 +92,12 @@ def process_hourly_data(start_date, end_date):
         for hour in [*range(0, 13), *range(21, 23)]:
             logger.info(f"处理 {current_date.strftime('%Y%m%d')} {hour:02d}:00")
 
-            # 初始化数据结构
+            # 初始化数据结构 (替换原代码)
             band_accum = {band: np.zeros(STATION_COUNT, dtype=np.float32) for band in BANDS}
-            band_count = np.zeros(STATION_COUNT, dtype=np.uint8)
+            band_count = {band: np.zeros(STATION_COUNT, dtype=np.uint8) for band in BANDS}  # 独立计数器
             angles_data = {angle: np.full(STATION_COUNT, np.nan, dtype=np.float32) for angle in ANGLES}
-            hourly_availability = np.ones(STATION_COUNT, dtype=np.int8)  # 默认全部无效(1)
+            station_valid = np.zeros(STATION_COUNT, dtype=bool)  # 站点级有效标记
+            hourly_availability = np.ones(STATION_COUNT, dtype=np.int8)
 
             # 处理6个时间点(00, 10, 20, 30, 40, 50)
             valid_time_points = 0
@@ -130,7 +131,8 @@ def process_hourly_data(start_date, end_date):
                             combined_mask = valid_mask & valid_data
 
                             band_accum[band][combined_mask] += band_data[combined_mask]
-                            band_count[combined_mask] += 1
+                            band_count[band][combined_mask] += 1  # 更新当前波段计数器
+                            station_valid[combined_mask] = True  # 标记有效站点
 
                         # 如果是30分钟时间点，记录角度
                         if minute == 30:
@@ -150,12 +152,12 @@ def process_hourly_data(start_date, end_date):
             hourly_bands = {}
             for band in BANDS:
                 avg = np.full(STATION_COUNT, np.nan, dtype=np.float32)
-                valid_indices = band_count > 0
-                avg[valid_indices] = band_accum[band][valid_indices] / band_count[valid_indices]
+                valid_indices = band_count[band] > 0  # 关键：使用当前波段的计数器
+                avg[valid_indices] = band_accum[band][valid_indices] / band_count[band][valid_indices]
                 hourly_bands[band] = avg
 
             # 设置可用性: 至少有一个有效时间点则为可用(0)
-            hourly_availability[band_count > 0] = 0
+            hourly_availability[station_valid] = 0
 
             # 如果没有任何有效时间点，记录警告
             if valid_time_points == 0:

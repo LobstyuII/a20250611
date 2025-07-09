@@ -431,8 +431,8 @@ def main():
         logger.info("创建新的缺失文件记录")
 
     # 设置日期范围和时间（扩展到2023年）
-    start_date = datetime.date(2018, 12, 1)
-    end_date = datetime.date(2021, 12, 31)  # 扩展结束日期到2023年底
+    start_date = datetime.date(2015, 7, 7)
+    end_date = datetime.date(2021, 12, 31)
     hours = [*range(0, 13), *range(21, 24)]
 
     # 按月份处理
