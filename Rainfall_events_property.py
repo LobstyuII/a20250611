@@ -14,7 +14,7 @@ BASE_PATH = r"D:\H8_data\ERA5"  # ERA5数据根目录
 OUTPUT_FILE = r"D:\H8_data\rain_events_all_stations.parquet"  # 输出文件路径
 RAIN_THRESHOLD = 0.1  # 有效降雨阈值(mm)
 DRY_HOURS = 1  # 最小无雨间隔(小时)
-YEARS = range(2015, 2021)  # 根据实际数据年份修改
+YEARS = range(2015, 2022)  # 根据实际数据年份修改
 N_CORES = mp.cpu_count()  # 使用的CPU核心数
 
 

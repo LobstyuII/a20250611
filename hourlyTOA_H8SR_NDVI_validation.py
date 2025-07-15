@@ -6,11 +6,11 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # 配置参数
-DATE = '20150707'  # 格式: YYYYMMDD
+DATE = '20150710'  # 格式: YYYYMMDD
 STATION_NAME = '1055A'  # 替换为实际站点名称
 TOA_DIR = 'D:/H8_data/Hourly_TOA_Angles'  # TOA反射率数据目录
 H8NDVI_DIR = 'D:/H8_Data/H8NDVI'  # H8 NDVI产品数据目录
-MODIS_DIR = 'D:/H8_Data/MODIS_NDVI'  # MODIS数据目录
+MODIS_DIR = 'D:/H8_Data/MODIS_NDVI_unresampled'  # MODIS数据目录
 OUTPUT_DIR = 'D:/H8_Data/NDVI_cross_validation/output_plots'  # 输出目录
 
 

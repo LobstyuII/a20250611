@@ -4,9 +4,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
 
+# 设置字体以支持中文和英文显示
+plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC", "DejaVu Sans"]
+sns.set_style("whitegrid")
+
 # 配置参数
 INPUT_FILE = r"D:\H8_data\rain_events_all_stations.parquet"  # 输入文件路径
-
 
 def analyze_rain_events(file_path):
     """
@@ -17,11 +20,25 @@ def analyze_rain_events(file_path):
     # 1. 加载数据
     print(f"Loading data from {file_path}...")
     try:
-        df = pd.read_parquet(file_path)
-        print(f"Successfully loaded {len(df):,} records")
+        # 尝试使用pyarrow读取
+        df = pd.read_parquet(file_path, engine='pyarrow')
+        print(f"Successfully loaded {len(df):,} records using pyarrow")
     except Exception as e:
-        print(f"Error loading file: {e}")
-        return
+        print(f"Error loading file with pyarrow: {e}")
+        try:
+            # 尝试使用fastparquet读取
+            df = pd.read_parquet(file_path, engine='fastparquet')
+            print(f"Successfully loaded {len(df):,} records using fastparquet")
+        except Exception as e2:
+            print(f"Error loading file with fastparquet: {e2}")
+            print("请确保pyarrow或fastparquet正确安装且版本兼容")
+            print("你可以尝试以下命令安装：")
+            print("pip install pyarrow fastparquet")
+            return
+
+    # 定义颜色调色板
+    n_classes = df['Intensity_Class'].nunique()
+    palette = sns.color_palette("tab10", n_colors=n_classes)
 
     # 2. 基本数据集信息
     print("\n===== Dataset Overview =====")
@@ -84,13 +101,14 @@ def analyze_rain_events(file_path):
 
     # 降雨强度类别分布
     plt.subplot(2, 2, 1)
-    sns.countplot(y='Intensity_Class', data=df, order=df['Intensity_Class'].value_counts().index)
+    sns.countplot(y='Intensity_Class', data=df, order=df['Intensity_Class'].value_counts().index, palette=palette)
     plt.title('Rain Intensity Class Distribution')
     plt.xlabel('Count')
 
-    # 数值变量分布
+    # 数值变量分布（修正 log_scale 参数）
     plt.subplot(2, 2, 2)
-    sns.histplot(df['Total_Rain_mm'], bins=50, kde=True, log_scale=(True, False))
+    ax = sns.histplot(df['Total_Rain_mm'], bins=50, kde=True)
+    ax.set_xscale('log')
     plt.title('Total Rainfall Distribution (log scale)')
     plt.xlabel('Total Rainfall (mm)')
 
@@ -108,6 +126,7 @@ def analyze_rain_events(file_path):
                     x='Duration_hours',
                     y='Total_Rain_mm',
                     hue='Intensity_Class',
+                    palette=palette,
                     alpha=0.6)
     plt.title('Rainfall vs Duration')
     plt.xlabel('Duration (hours)')

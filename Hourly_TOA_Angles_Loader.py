@@ -89,7 +89,7 @@ def process_hourly_data(start_date, end_date):
         month = current_date.month
         day = current_date.day
 
-        for hour in [*range(0, 13), *range(21, 23)]:
+        for hour in [*range(0, 12), *range(21, 23)]:
             logger.info(f"处理 {current_date.strftime('%Y%m%d')} {hour:02d}:00")
 
             # 初始化数据结构 (替换原代码)
@@ -97,7 +97,10 @@ def process_hourly_data(start_date, end_date):
             band_count = {band: np.zeros(STATION_COUNT, dtype=np.uint8) for band in BANDS}  # 独立计数器
             angles_data = {angle: np.full(STATION_COUNT, np.nan, dtype=np.float32) for angle in ANGLES}
             station_valid = np.zeros(STATION_COUNT, dtype=bool)  # 站点级有效标记
-            hourly_availability = np.ones(STATION_COUNT, dtype=np.int8)
+            hourly_availability = np.ones(STATION_COUNT, dtype=np.int8)  # 默认1:无效
+
+            # 新增: 太阳高度角无效标记
+            soz_invalid_mask = np.zeros(STATION_COUNT, dtype=bool)  # 标记SOZ≥65的站点
 
             # 处理6个时间点(00, 10, 20, 30, 40, 50)
             valid_time_points = 0
@@ -118,11 +121,18 @@ def process_hourly_data(start_date, end_date):
                         landwater = l2ds.variables['Land_Water_Flag'][:]
                         cloud = l2ds.variables['Cloud_Flag'][:]
 
-                    # 计算综合可用性 (0=可用)
-                    valid_mask = (avail == 0) & (landwater == 0) & (cloud == 0)
-
                     # 2. 加载L1TOA数据
                     with nc.Dataset(l1toa_path) as l1ds:
+                        # +++ 新增: 检查太阳高度角(SOZ) +++
+                        soz = l1ds.variables['SOZ'][:]
+                        soz_valid = (soz < 65) & np.isfinite(soz)  # SOZ<65且有效
+
+                        # 计算综合可用性 (0=可用)，添加SOZ条件
+                        valid_mask = (avail == 0) & (landwater == 0) & (cloud == 0) & soz_valid
+
+                        # 记录SOZ无效的站点（用于最终标记）
+                        soz_invalid_mask |= (soz >= 65) & np.isfinite(soz)  # 标记SOZ≥65的站点
+
                         # 处理波段数据
                         for band in BANDS:
                             band_data = l1ds.variables[band][:]
@@ -156,8 +166,11 @@ def process_hourly_data(start_date, end_date):
                 avg[valid_indices] = band_accum[band][valid_indices] / band_count[band][valid_indices]
                 hourly_bands[band] = avg
 
-            # 设置可用性: 至少有一个有效时间点则为可用(0)
+            # 设置可用性:
+            # - 至少有一个有效时间点则为可用(0)
+            # - 太阳高度角≥65度则标记为-1
             hourly_availability[station_valid] = 0
+            hourly_availability[soz_invalid_mask] = -1  # 覆盖其他标记
 
             # 如果没有任何有效时间点，记录警告
             if valid_time_points == 0:
@@ -191,11 +204,11 @@ def process_hourly_data(start_date, end_date):
                         angle_var.units = "Degrees"
                         angle_var.long_name = f"Satellite/Solar angle at {hour:02d}:30"
 
-                    # 添加可用性变量
+                    # 添加可用性变量 (更新描述)
                     avail_var = out_ds.createVariable('hourly_availability', np.int8, ('Station',))
                     avail_var[:] = hourly_availability
-                    avail_var.long_name = "Hourly data availability (0=valid)"
-                    avail_var.description = "0: valid, 1: invalid (no valid 10-min data points)"
+                    avail_var.long_name = "Hourly data availability"
+                    avail_var.description = "0: valid; 1: invalid (no valid 10-min data points); -1: solar zenith angle >=65"
 
                     # 添加全局属性
                     out_ds.time = f"{year}{month:02d}{day:02d}{hour:02d}00"
@@ -203,6 +216,7 @@ def process_hourly_data(start_date, end_date):
                     out_ds.source = f"Generated from {start_date} to {end_date}"
                     out_ds.creation_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     out_ds.valid_time_points = valid_time_points
+                    out_ds.soz_threshold = "Solar zenith angle <65 degrees for valid daytime pixels"
 
                 logger.info(f"创建输出文件: {output_file}")
 
@@ -219,7 +233,7 @@ if __name__ == "__main__":
 
     # 设置日期范围
     start_date = datetime(2015, 7, 7)
-    end_date = datetime(2016, 12, 31)
+    end_date = datetime(2018, 12, 31)
 
     # 添加详细日志
     logger.addHandler(logging.StreamHandler(sys.stdout))

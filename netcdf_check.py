@@ -100,9 +100,12 @@ def print_nc_file_details(file_path):
 
 if __name__ == "__main__":
     # 指定要查看的文件路径
-    file_path = r"D:\H8_data\LUT_Cache\1_LUCC9_AOT0.05106627941131592_OZ0.23536465454101563.nc"
-    # file_path = r"D:\H8_data\MODIS_NDVI\2015\07\MODIS_NDVI_20150708.nc"
-    # file_path = r"D:\H8_data\H8SR\SR_20150707_0000.nc"
+    file_path = r"D:\H8_data\Air\2015\07\Air_20150701_0500.nc"
+    file_path = r"D:\H8_data\ERA5\2015\07\ERA5_20150707_0300.nc"
+    # file_path = r"D:\H8_data\Hourly_TOA_Angles\2015\09\H8_hourly_TOA_angles_20150901_2100.nc"
+    # file_path = r"D:\H8_data\NDVI_TimeSeries\NDVI_Station_1001A.nc"
+
+    file_path = r"D:\H8_data\LC_2015_2024.nc"
 
     # 打印文件详细信息
     print_nc_file_details(file_path)

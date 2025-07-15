@@ -16,7 +16,7 @@ PROCESS_HOURS = list(range(0, 13)) + list(range(21, 24))
 
 # 日期范围
 START_DATE = datetime(2015, 7, 7)
-END_DATE = datetime(2015, 7, 8)
+END_DATE = datetime(2015, 8, 6)
 
 
 def get_current_timestamp():

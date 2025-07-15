@@ -31,9 +31,9 @@ BAND_NAMES = ['Albedo_03', 'Albedo_04']
 ANGLE_NAMES = ['SAZ', 'SAA', 'SOZ', 'SOA']
 
 # 处理范围
-START_DATE = datetime(2015, 7, 7)
-END_DATE = datetime(2015, 12, 31)
-PROCESS_HOURS = list(range(0, 13)) + list(range(21, 24))
+START_DATE = datetime(2016, 1, 1)
+END_DATE = datetime(2016, 12, 31)
+PROCESS_HOURS = list(range(0, 12)) + list(range(21, 23))
 
 # LUCC到BRDF映射
 LUCC_TO_BRDF = {
@@ -349,7 +349,7 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
     total_matched = len(matched)
 
     with ProcessPoolExecutor(
-            max_workers=multiprocessing.cpu_count(),
+            max_workers=min(12, multiprocessing.cpu_count()),
             initializer=init_worker,
             initargs=(sr_shm.name, sr_shape)
     ) as executor:
