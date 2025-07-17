@@ -106,6 +106,7 @@ if __name__ == "__main__":
     # file_path = r"D:\H8_data\NDVI_TimeSeries\NDVI_Station_1001A.nc"
 
     file_path = r"D:\H8_data\LC_2015_2024.nc"
+    file_path = r"D:\H8_data\LUTs.nc"
 
     # 打印文件详细信息
     print_nc_file_details(file_path)

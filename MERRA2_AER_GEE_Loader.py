@@ -70,8 +70,8 @@ def get_feature_collection(stations, lats, lons):
         raise
 
 
-def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_path):
-    """保存单小时MERRA-2数据到单独的NC文件（修复格式问题）"""
+def save_hourly_merra_data(dt, aot550_data, stations, lats, lons, base_path):
+    """保存单小时MERRA-2 AOT550数据到单独的NC文件"""
     try:
         if isinstance(dt, np.datetime64):
             dt = pd.Timestamp(dt).to_pydatetime()
@@ -79,11 +79,11 @@ def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_pa
         # 创建年月目录
         year = dt.strftime("%Y")
         month = dt.strftime("%m")
-        dir_path = os.path.join(base_path, "MERRA2", year, month)
+        dir_path = os.path.join(base_path, "MERRA2_AOT550", year, month)
         os.makedirs(dir_path, exist_ok=True)
 
-        # 文件命名格式为hhmm，包含TO3和TQV
-        filename = f"MERRA2_{dt.strftime('%Y%m%d_%H%M')}_TO3_TQV.nc"
+        # 文件命名格式为hhmm，包含AOT550
+        filename = f"MERRA2_{dt.strftime('%Y%m%d_%H%M')}_AOT550.nc"
         file_path = os.path.join(dir_path, filename)
 
         # 检查文件是否已存在且完整
@@ -99,7 +99,7 @@ def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_pa
             except Exception as e:
                 logging.error(f"删除文件失败: {e}")
 
-        # 创建新的NC文件 - 修复格式问题
+        # 创建新的NC文件
         with nc.Dataset(file_path, 'w', format='NETCDF4') as ds:
             # 定义维度 - 仅保留Station维度
             ds.createDimension('Station', len(stations))
@@ -107,30 +107,26 @@ def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_pa
             # 计算最大字符串长度
             max_str_len = max(len(str(s)) for s in stations) + 1
 
-            # 定义变量 - 修复：使用一维数组
+            # 定义变量
             station_var = ds.createVariable('Station', f'S{max_str_len}', ('Station',))
             lat_var = ds.createVariable('Lat', 'f4', ('Station',))
             lon_var = ds.createVariable('Lon', 'f4', ('Station',))
-            to3_var = ds.createVariable('TO3', 'f4', ('Station',), fill_value=-9999.0)
-            tqv_var = ds.createVariable('TQV', 'f4', ('Station',), fill_value=-9999.0)
+            aot550_var = ds.createVariable('AOT550', 'f4', ('Station',), fill_value=-9999.0)
 
             # 设置全局时间属性
             ds.setncattr('time', dt.strftime('%Y-%m-%d %H:%M:%S'))
             ds.setncattr('datetime', dt.isoformat())
 
             # 设置变量属性
-            to3_var.long_name = 'Total Ozone Column'
-            to3_var.units = 'Dobson Units'
-            tqv_var.long_name = 'Total Precipitable Water Vapor'
-            tqv_var.units = 'kg/m^2'
+            aot550_var.long_name = 'Total Aerosol Optical Depth at 550 nm'
+            aot550_var.units = '1'
 
-            # 写入数据 - 修复：直接使用一维数组
+            # 写入数据
             station_arr = np.array([np.string_(str(s)) for s in stations], dtype=f'S{max_str_len}')
             station_var[:] = station_arr
             lat_var[:] = lats
             lon_var[:] = lons
-            to3_var[:] = to3_data
-            tqv_var[:] = tqv_data
+            aot550_var[:] = aot550_data
 
         return True
     except Exception as e:
@@ -149,7 +145,7 @@ def save_hourly_merra_data(dt, to3_data, tqv_data, stations, lats, lons, base_pa
 
 
 def process_hourly_merra_data(dt, collection, poi_fc, stations, lats, lons, base_path, max_retries=5):
-    """处理单小时MERRA-2数据并保存（带重试机制）"""
+    """处理单小时MERRA-2 AOT550数据并保存（带重试机制）"""
     retry_count = 0
     while retry_count < max_retries:
         try:
@@ -167,8 +163,8 @@ def process_hourly_merra_data(dt, collection, poi_fc, stations, lats, lons, base
                 logging.warning(f"{start_dt} 没有数据")
                 return False
 
-            # 选择TO3和TQV波段
-            image = image.select(['TO3', 'TQV'])
+            # 选择AOT550波段 (TOTEXTTAU)
+            image = image.select(['TOTEXTTAU'])
 
             # 采样POI
             sampled = image.sampleRegions(
@@ -184,33 +180,27 @@ def process_hourly_merra_data(dt, collection, poi_fc, stations, lats, lons, base
                 logging.warning(f"{start_dt} 没有采样结果")
                 return False
 
-            # 提取TO3和TQV数据
-            to3_data = []
-            tqv_data = []
+            # 提取AOT550数据
+            aot550_data = []
             station_ids = []
 
             for feature in sampled_dict['features']:
                 props = feature['properties']
                 station_ids.append(props['Station'])
-                to3_value = props.get('TO3', -9999.0)
-                tqv_value = props.get('TQV', -9999.0)
-                to3_data.append(to3_value)
-                tqv_data.append(tqv_value)
+                aot550_value = props.get('TOTEXTTAU', -9999.0)
+                aot550_data.append(aot550_value)
 
             # 按原始站点顺序排序
-            sorted_to3 = []
-            sorted_tqv = []
+            sorted_aot550 = []
             for station in stations:
                 if station in station_ids:
                     idx = station_ids.index(station)
-                    sorted_to3.append(to3_data[idx])
-                    sorted_tqv.append(tqv_data[idx])
+                    sorted_aot550.append(aot550_data[idx])
                 else:
-                    sorted_to3.append(-9999.0)
-                    sorted_tqv.append(-9999.0)
+                    sorted_aot550.append(-9999.0)
 
             # 保存数据
-            return save_hourly_merra_data(dt, sorted_to3, sorted_tqv, stations, lats, lons, base_path)
+            return save_hourly_merra_data(dt, sorted_aot550, stations, lats, lons, base_path)
 
         except ee.EEException as e:
             retry_count += 1
@@ -261,7 +251,7 @@ def main():
     logging.info(f"共读取 {len(stations)} 个站点")
 
     # 2. 明码指定时间范围
-    start_date = datetime.date(2021, 10, 1)
+    start_date = datetime.date(2015, 6, 7)
     end_date = datetime.date(2024, 12, 31)
 
     # 3. 生成整点时间列表
@@ -271,9 +261,9 @@ def main():
     # 创建FeatureCollection
     poi_fc = get_feature_collection(stations, lats, lons)
 
-    # 定义MERRA-2 ImageCollection
-    collection = ee.ImageCollection("NASA/GSFC/MERRA/slv/2")
-    logging.info("MERRA-2 数据集加载成功")
+    # 定义MERRA-2 ImageCollection (AOT550)
+    collection = ee.ImageCollection("NASA/GSFC/MERRA/aer/2")
+    logging.info("MERRA-2 TOTEXTTAU AOT550 数据集加载成功")
 
     # 准备任务队列
     tasks = []
@@ -285,8 +275,8 @@ def main():
 
         year = py_dt.strftime("%Y")
         month = py_dt.strftime("%m")
-        filename = f"MERRA2_{py_dt.strftime('%Y%m%d_%H%M')}_TO3_TQV.nc"
-        file_path = os.path.join(data_path, "MERRA2", year, month, filename)
+        filename = f"MERRA2_{py_dt.strftime('%Y%m%d_%H%M')}_AOT550.nc"
+        file_path = os.path.join(data_path, "MERRA2_AOT550", year, month, filename)
 
         # 检查文件是否需要下载
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 2048:
@@ -302,7 +292,7 @@ def main():
     # 设置并行线程数
     max_workers = 4
 
-    with tqdm(total=total_tasks, desc="下载MERRA-2数据") as pbar:
+    with tqdm(total=total_tasks, desc="下载MERRA-2 AOT550数据") as pbar:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(
                 process_hourly_merra_data,
@@ -326,18 +316,18 @@ def main():
 
 
 def merge_merra_data(base_path, output_path):
-    """合并所有小时MERRA-2数据到单个NetCDF文件（更新为处理新格式）"""
+    """合并所有小时MERRA-2 AOT550数据到单个NetCDF文件"""
     try:
         all_files = []
-        merra_dir = os.path.join(base_path, "MERRA2")
+        merra_dir = os.path.join(base_path, "MERRA2_AOT550")
 
         for root, dirs, files in os.walk(merra_dir):
             for file in files:
-                if file.endswith(".nc") and file.startswith("MERRA2_") and "TO3_TQV" in file:
+                if file.endswith(".nc") and file.startswith("MERRA2_") and "AOT550" in file:
                     all_files.append(os.path.join(root, file))
 
         if not all_files:
-            logging.error("未找到MERRA-2数据文件")
+            logging.error("未找到MERRA-2 AOT550数据文件")
             return
 
         logging.info(f"找到 {len(all_files)} 个数据文件，开始合并...")
@@ -347,7 +337,7 @@ def merge_merra_data(base_path, output_path):
         ds_list = []
         time_values = []
 
-        for file in tqdm(all_files, desc="合并MERRA-2文件"):
+        for file in tqdm(all_files, desc="合并MERRA-2 AOT550文件"):
             try:
                 # 从全局属性获取时间
                 with nc.Dataset(file) as ds:
@@ -394,10 +384,10 @@ def merge_merra_data(base_path, output_path):
 
 
 if __name__ == "__main__":
-    # 第一步：下载数据
+    # 第一步：下载AOT550数据
     main()
 
     # 第二步：合并数据（在下载完成后运行）
     # data_path = "D:/H8_data"
-    # output_nc = os.path.join(data_path, "MERRA2_TO3_TQV_combined.nc")
+    # output_nc = os.path.join(data_path, "MERRA2_AOT550_combined.nc")
     # merge_merra_data(data_path, output_nc)

@@ -39,7 +39,7 @@ console_handler.addFilter(NotWarningFilter())  # 过滤掉warning级别的日志
 logger.addHandler(console_handler)
 
 # FTP密钥文件
-CONFIG_FILE = "../ftp_config#1.json"
+CONFIG_FILE = "ftp_config#1.json"
 
 
 def load_ftp_config():
