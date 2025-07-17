@@ -376,7 +376,7 @@ def main():
     global vacant_file_path, vacant_dates
 
     # 基础数据路径
-    Data_path = "H8_data"
+    Data_path = "../H8_data"
 
     # 使用LUTs.nc代替CSV查找表
     lut_path = os.path.join(Data_path, "LUTs.nc")

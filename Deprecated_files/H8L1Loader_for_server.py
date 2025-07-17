@@ -386,7 +386,7 @@ def integrate_monthly_data(month_dir, year, month):
 def main():
     global vacant_file_path, vacant_dates
 
-    Data_path = "H8_data"
+    Data_path = "../H8_data"
     LUTs_file = os.path.join(Data_path, "LUTs.nc")
     ds_lut = xr.open_dataset(LUTs_file)
 
