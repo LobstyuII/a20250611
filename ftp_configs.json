@@ -1,0 +1,17 @@
+{
+    "config1": {
+        "FTP_ADDRESS": "ftp.ptree.jaxa.jp",
+        "FTP_UID": "2001212684_alumni.pku.edu.cn",
+        "FTP_PW": "SP+wari8"
+    },
+    "config2": {
+        "FTP_ADDRESS": "ftp.ptree.jaxa.jp",
+        "FTP_UID": "511153727_qq.com",
+        "FTP_PW": "SP+wari8"
+    },
+    "config3": {
+        "FTP_ADDRESS": "ftp.ptree.jaxa.jp",
+        "FTP_UID": "lobstyu_gmail.com",
+        "FTP_PW": "SP+wari8"
+    }
+}
