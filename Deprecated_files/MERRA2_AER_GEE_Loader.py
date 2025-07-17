@@ -2,7 +2,6 @@ import ee
 import pandas as pd
 import datetime
 import os
-import math
 import logging
 import time
 import numpy as np
@@ -11,7 +10,6 @@ import xarray as xr
 from tqdm import tqdm
 import concurrent.futures
 import traceback
-import shutil
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,7 +20,7 @@ logging.basicConfig(
 
 def GEE_authorizing():
     service_account = "lobstyu@premium-cipher-424203-d0.iam.gserviceaccount.com"
-    credentials_path = 'premium-cipher-424203-d0-c6894a29d00c.json'
+    credentials_path = '../premium-cipher-424203-d0-c6894a29d00c.json'
     try:
         credentials = ee.ServiceAccountCredentials(service_account, credentials_path)
         ee.Initialize(credentials)
@@ -79,7 +77,7 @@ def save_hourly_merra_data(dt, aot550_data, stations, lats, lons, base_path):
         # 创建年月目录
         year = dt.strftime("%Y")
         month = dt.strftime("%m")
-        dir_path = os.path.join(base_path, "MERRA2_AOT550", year, month)
+        dir_path = os.path.join(base_path, "MERRA2_aer", year, month)
         os.makedirs(dir_path, exist_ok=True)
 
         # 文件命名格式为hhmm，包含AOT550
@@ -276,7 +274,7 @@ def main():
         year = py_dt.strftime("%Y")
         month = py_dt.strftime("%m")
         filename = f"MERRA2_{py_dt.strftime('%Y%m%d_%H%M')}_AOT550.nc"
-        file_path = os.path.join(data_path, "MERRA2_AOT550", year, month, filename)
+        file_path = os.path.join(data_path, "MERRA2_aer", year, month, filename)
 
         # 检查文件是否需要下载
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 2048:
@@ -319,7 +317,7 @@ def merge_merra_data(base_path, output_path):
     """合并所有小时MERRA-2 AOT550数据到单个NetCDF文件"""
     try:
         all_files = []
-        merra_dir = os.path.join(base_path, "MERRA2_AOT550")
+        merra_dir = os.path.join(base_path, "MERRA2_aer")
 
         for root, dirs, files in os.walk(merra_dir):
             for file in files:

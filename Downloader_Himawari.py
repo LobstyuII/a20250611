@@ -174,67 +174,79 @@ def record_vacant_date(date_str):
 
 
 def download_from_ftp(ftp_path, local_filename, download_dir):
-    """从FTP服务器下载文件，当文件不存在时立即返回"""
+    """从FTP服务器下载文件，区分文件不存在和网络错误"""
     # 创建下载目录
     if not os.path.exists(download_dir):
         os.makedirs(download_dir)
 
     final_filepath = os.path.join(download_dir, local_filename)
 
-    try:
-        # 建立FTP连接
-        with ftplib.FTP(FTP_ADDRESS, timeout=30) as ftp:
-            ftp.login(FTP_UID, FTP_PW)
-            ftp.voidcmd("TYPE I")
+    # 设置重试参数
+    max_retries = 3
+    retry_delay = 5  # 初始延迟秒数
+    retry_count = 0
 
-            # 检查文件是否存在
-            try:
-                file_size = ftp.size(ftp_path)
-            except ftplib.error_perm as e:
-                # 550错误表示文件不存在
-                if '550' in str(e):
-                    logger.info(f"文件在FTP上不存在: {ftp_path}")
-                    return None
-                raise  # 其他权限错误继续抛出
+    while retry_count < max_retries:
+        try:
+            # 建立FTP连接
+            with ftplib.FTP(FTP_ADDRESS, timeout=30) as ftp:
+                ftp.login(FTP_UID, FTP_PW)
+                ftp.voidcmd("TYPE I")
 
-            # 文件存在，开始下载
+                # 检查文件是否存在
+                try:
+                    file_size = ftp.size(ftp_path)
+                except ftplib.error_perm as e:
+                    # 550错误表示文件不存在
+                    if '550' in str(e):
+                        logger.info(f"文件在FTP上不存在: {ftp_path}")
+                        return "not_exist"  # 返回特定标识
+                    raise  # 其他权限错误继续抛出
+
+                # 文件存在，开始下载
+                temp_filepath = os.path.join(download_dir, f"temp_{local_filename}")
+
+                # 检查并删除临时文件（如果存在）
+                if os.path.exists(temp_filepath):
+                    logger.info(f"发现临时文件 {temp_filepath}，删除它并重新下载")
+                    os.remove(temp_filepath)
+
+                with open(temp_filepath, 'wb') as local_file:
+                    def callback(data):
+                        local_file.write(data)
+
+                    # 从头开始下载（rest=0）
+                    ftp.retrbinary(f'RETR {ftp_path}', callback, rest=0)
+
+                # 确认文件下载成功
+                if os.path.getsize(temp_filepath) == file_size:
+                    os.rename(temp_filepath, final_filepath)
+                    logger.info(f"文件下载成功: {final_filepath}")
+                    return final_filepath
+                else:
+                    os.remove(temp_filepath)
+                    raise Exception("下载文件大小不匹配")
+
+        except ftplib.all_errors as e:
+            logger.warning(f"FTP连接失败({e})，{retry_delay}秒后重试({retry_count + 1}/{max_retries})")
+            time.sleep(retry_delay)
+            retry_count += 1
+            retry_delay *= 2  # 指数退避
+        except Exception as e:
+            logger.error(f"未知错误: {e}")
+            break
+        finally:
+            # 确保删除临时文件（如果存在）
             temp_filepath = os.path.join(download_dir, f"temp_{local_filename}")
-
-            # 检查并删除临时文件（如果存在）
             if os.path.exists(temp_filepath):
-                logger.info(f"发现临时文件 {temp_filepath}，删除它并重新下载")
-                os.remove(temp_filepath)
+                try:
+                    os.remove(temp_filepath)
+                except:
+                    pass
 
-            with open(temp_filepath, 'wb') as local_file:
-                def callback(data):
-                    local_file.write(data)
-
-                # 从头开始下载（rest=0）
-                ftp.retrbinary(f'RETR {ftp_path}', callback, rest=0)
-
-            # 确认文件下载成功
-            if os.path.getsize(temp_filepath) == file_size:
-                os.rename(temp_filepath, final_filepath)
-                logger.info(f"文件下载成功: {final_filepath}")
-                return final_filepath
-            else:
-                os.remove(temp_filepath)
-                raise Exception("下载文件大小不匹配")
-
-    except ftplib.all_errors as e:
-        logger.error(f"FTP文件下载失败: {e}")
-    except Exception as e:
-        logger.error(f"未知错误: {e}")
-    finally:
-        # 确保删除临时文件（如果存在）
-        temp_filepath = os.path.join(download_dir, f"temp_{local_filename}")
-        if os.path.exists(temp_filepath):
-            try:
-                os.remove(temp_filepath)
-            except:
-                pass
-
-    return None
+    # 重试次数耗尽
+    logger.error(f"FTP文件下载失败(重试{max_retries}次后): {ftp_path}")
+    return "network_error"  # 网络错误标识
 
 
 def get_satellite_prefix(date):
@@ -556,7 +568,7 @@ def download_and_process(date, hour, minute, lookup_df, base_dir, data_type):
         ftp_path = get_l1_ftp_path(date, hour, minute)
         time_str = f"{hour:02d}{minute:02d}"
         local_filename = f"himawari_{date.strftime('%Y%m%d')}_{time_str}.nc"
-        small_nc_filename = f"H8L1_{date.year:04d}{date.month:02d}{date.day:02d}_{time_str}.nc"
+        small_nc_filename = f"H8_{date.year:04d}{date.month:02d}{date.day:02d}_{time_str}.nc"
         process_func = process_l1_file
     elif data_type == "L2":
         data_dir = "H8L2ARP"
@@ -591,22 +603,27 @@ def download_and_process(date, hour, minute, lookup_df, base_dir, data_type):
         return False
 
     # 下载文件
-    downloaded_file = download_from_ftp(ftp_path, local_filename, date_dir)
+    download_result = download_from_ftp(ftp_path, local_filename, date_dir)
 
-    # 处理文件缺失情况
-    if downloaded_file is None:
+    # 处理下载结果
+    if download_result == "not_exist":  # 文件不存在
         record_vacant_date(date_str)
+        return False
+    elif download_result == "network_error":  # 网络错误
+        logger.error(f"网络错误导致下载失败: {date_str}")
+        return False
+    elif download_result is None:  # 其他错误
         return False
 
     # 如果文件下载成功，则处理文件
-    if downloaded_file:
-        success = process_func(downloaded_file, lookup_df, small_nc_path)
+    if download_result:
+        success = process_func(download_result, lookup_df, small_nc_path)
         if success:
-            logger.info(f"文件处理完成: {downloaded_file}")
+            logger.info(f"文件处理完成: {download_result}")
             # 删除下载的原始数据文件
             try:
-                os.remove(downloaded_file)
-                logger.info(f"已删除下载的原始数据文件: {downloaded_file}")
+                os.remove(download_result)
+                logger.info(f"已删除下载的原始数据文件: {download_result}")
             except Exception as e:
                 logger.error(f"删除文件失败: {e}")
             return True
@@ -789,17 +806,13 @@ def main():
 
             completed_tasks += 1
             elapsed_time = time.time() - start_time
-            avg_time_per_task = elapsed_time / completed_tasks if completed_tasks > 0 else 0
-            remaining_tasks = total_tasks - completed_tasks
-            eta = avg_time_per_task * remaining_tasks
 
             # 每10个任务或最后任务时报告进度
             if completed_tasks % 10 == 0 or completed_tasks == total_tasks:
                 logger.info(
                     f"进度: {completed_tasks}/{total_tasks} | "
                     f"成功: {success_count} | 跳过: {skip_count} | "
-                    f"用时: {elapsed_time:.1f}s | "
-                    f"ETA: {eta:.1f}s"
+                    f"用时: {elapsed_time:.1f}s"
                 )
 
     # 最终报告
