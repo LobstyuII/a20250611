@@ -1,6 +1,8 @@
 conda create -n a20250611
 conda activate a20250611
-conda install -c conda-forge pandas xarray dask zarr netCDF4 tqdm earthengine-api py6s scipy statsmodels matplotlib=3.7.3 numba tabulate ptitprince
+conda install -c conda-forge pandas xarray dask zarr netCDF4 tqdm earthengine-api py6s scipy statsmodels matplotlib=3.7.3 numba tabulate ptitprince geopandas
+
+~~~
 # conda install -c conda-forge h5py paramiko
 conda install -c conda-forge matplotlib=3.7.3
 
@@ -14,4 +16,5 @@ conda install -c conda-forge pandas xarray dask zarr netCDF4 tqdm earthengine-ap
 conda install -c conda-forge pyarrow fastparquet python=3.9
 
 
-conda install -c conda-forge matplotlib=3.7.3
+conda install -c conda-forge pygeos
+~~~

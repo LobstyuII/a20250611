@@ -33,7 +33,7 @@ def GEE_authorizing():
 
 
 def read_luts_nc(luts_path):
-    """从LUTs.nc文件中读取站点信息（不再读取时间）"""
+    """从LUTs.nc文件中读取站点信息"""
     try:
         ds = xr.open_dataset(luts_path)
         logging.info(f"成功读取 LUTs.nc 文件")
@@ -50,28 +50,60 @@ def read_luts_nc(luts_path):
         raise
 
 
+def get_himawari_grid(lon, lat):
+    """
+    计算Himawari 5km网格的边界和索引
+    公式:
+        longitude = 80 + x * 0.05
+        latitude = 60 - y * 0.05
+    """
+    # 计算网格索引
+    x_index = math.floor((lon - 80) / 0.05)
+    y_index = math.floor((60 - lat) / 0.05)
+
+    # 计算网格边界
+    west = 80 + x_index * 0.05
+    east = west + 0.05
+    north = 60 - y_index * 0.05
+    south = north - 0.05
+
+    return west, south, east, north, x_index, y_index
+
+
 def get_feature_collection(stations, lats, lons):
-    """创建GEE FeatureCollection"""
+    """创建Himawari 5km网格的FeatureCollection"""
     try:
         features = []
+        grid_info = []  # 存储网格索引信息
+
         for station, lat, lon in zip(stations, lats, lons):
+            # 计算Himawari网格
+            west, south, east, north, x_index, y_index = get_himawari_grid(lon, lat)
+
+            # 创建矩形特征
+            rect = ee.Geometry.Rectangle([west, south, east, north])
             feature = ee.Feature(
-                ee.Geometry.Point(lon, lat),
-                {'Station': station}
+                rect,
+                {
+                    'Station': station,
+                    'grid_x': x_index,
+                    'grid_y': y_index
+                }
             )
             features.append(feature)
+            grid_info.append((x_index, y_index))
 
         fc = ee.FeatureCollection(features)
-        logging.info("成功创建 FeatureCollection")
-        return fc
+        logging.info("成功创建Himawari网格FeatureCollection")
+        return fc, grid_info
 
     except Exception as e:
-        logging.error(f"创建 FeatureCollection 失败: {e}")
+        logging.error(f"创建FeatureCollection失败: {e}")
         raise
 
 
-def save_daily_data(date, terra_data, aqua_data, stations, lats, lons, base_path):
-    """保存单日数据到单独的NC文件"""
+def save_daily_data(date, terra_data, aqua_data, stations, lats, lons, grid_info, base_path):
+    """保存单日数据到NC文件（新增网格索引）"""
     try:
         # 创建年月目录
         year = date.strftime("%Y")
@@ -100,6 +132,10 @@ def save_daily_data(date, terra_data, aqua_data, stations, lats, lons, base_path
             terra_var = ds.createVariable('NDVI_Terra', 'f4', ('Station',), fill_value=-9999.0)
             aqua_var = ds.createVariable('NDVI_Aqua', 'f4', ('Station',), fill_value=-9999.0)
 
+            # 新增网格索引变量
+            gridx_var = ds.createVariable('grid_x', 'i4', ('Station',))
+            gridy_var = ds.createVariable('grid_y', 'i4', ('Station',))
+
             # 添加日期作为全局属性
             ds.date = date.strftime("%Y-%m-%d")
 
@@ -107,6 +143,12 @@ def save_daily_data(date, terra_data, aqua_data, stations, lats, lons, base_path
             station_var[:] = np.array(stations, dtype=object)
             lat_var[:] = lats
             lon_var[:] = lons
+
+            # 写入网格索引数据
+            gridx = [g[0] for g in grid_info]
+            gridy = [g[1] for g in grid_info]
+            gridx_var[:] = gridx
+            gridy_var[:] = gridy
 
             # 写入NDVI数据（一维数组）
             terra_var[:] = terra_data
@@ -121,8 +163,8 @@ def save_daily_data(date, terra_data, aqua_data, stations, lats, lons, base_path
         return False
 
 
-def process_daily_data(date, terra_col, aqua_col, poi_fc, stations, lats, lons, base_path, max_retries=5):
-    """处理单日数据并保存（带重试机制）"""
+def process_daily_data(date, terra_col, aqua_col, grid_fc, stations, lats, lons, grid_info, base_path, max_retries=5):
+    """处理单日数据（使用区域统计替代点采样）"""
     retry_count = 0
     while retry_count < max_retries:
         try:
@@ -130,43 +172,57 @@ def process_daily_data(date, terra_col, aqua_col, poi_fc, stations, lats, lons, 
             start_date = datetime.datetime(date.year, date.month, date.day, 0, 0, 0)
             end_date = start_date + datetime.timedelta(days=1)
 
-            # 获取Terra数据
+            # 获取Terra数据（使用区域统计）
             terra_img = terra_col.filterDate(start_date, end_date).first()
             terra_data = [-9999.0] * len(stations)
 
             if terra_img:
-                terra_sampled = terra_img.sampleRegions(
-                    collection=poi_fc,
-                    scale=1000,
-                    geometries=False
+                terra_reduced = terra_img.reduceRegions(
+                    collection=grid_fc,
+                    reducer=ee.Reducer.mean(),
+                    scale=500  # MODIS原始分辨率
                 )
-                terra_info = terra_sampled.getInfo()
+                terra_info = terra_reduced.getInfo()
 
-                if 'features' in terra_info and terra_info['features']:
-                    # 提取采样结果并映射到站点顺序
-                    temp_data = {f['properties']['Station']: f['properties'].get('NDVI', -9999.0)
-                                 for f in terra_info['features']}
+                if 'features' in terra_info:
+                    # 构建站点到NDVI的映射
+                    temp_data = {}
+                    for f in terra_info['features']:
+                        props = f['properties']
+                        station = props['Station']
+                        ndvi = props.get('mean', -9999.0)
+                        if ndvi is None:  # 处理空值
+                            ndvi = -9999.0
+                        temp_data[station] = ndvi
+
                     terra_data = [temp_data.get(station, -9999.0) for station in stations]
 
-            # 获取Aqua数据
+            # 获取Aqua数据（同样使用区域统计）
             aqua_img = aqua_col.filterDate(start_date, end_date).first()
             aqua_data = [-9999.0] * len(stations)
 
             if aqua_img:
-                aqua_sampled = aqua_img.sampleRegions(
-                    collection=poi_fc,
-                    scale=1000,
-                    geometries=False
+                aqua_reduced = aqua_img.reduceRegions(
+                    collection=grid_fc,
+                    reducer=ee.Reducer.mean(),
+                    scale=500
                 )
-                aqua_info = aqua_sampled.getInfo()
+                aqua_info = aqua_reduced.getInfo()
 
-                if 'features' in aqua_info and aqua_info['features']:
-                    temp_data = {f['properties']['Station']: f['properties'].get('NDVI', -9999.0)
-                                 for f in aqua_info['features']}
+                if 'features' in aqua_info:
+                    temp_data = {}
+                    for f in aqua_info['features']:
+                        props = f['properties']
+                        station = props['Station']
+                        ndvi = props.get('mean', -9999.0)
+                        if ndvi is None:
+                            ndvi = -9999.0
+                        temp_data[station] = ndvi
+
                     aqua_data = [temp_data.get(station, -9999.0) for station in stations]
 
-            # 保存数据
-            return save_daily_data(date, terra_data, aqua_data, stations, lats, lons, base_path)
+            # 保存数据（新增grid_info参数）
+            return save_daily_data(date, terra_data, aqua_data, stations, lats, lons, grid_info, base_path)
 
         except Exception as e:
             retry_count += 1
@@ -192,8 +248,8 @@ def main():
     stations, lats, lons = read_luts_nc(luts_path)
     logging.info(f"共读取 {len(stations)} 个站点")
 
-    # 创建FeatureCollection
-    poi_fc = get_feature_collection(stations, lats, lons)
+    # 创建Himawari网格FeatureCollection并获取网格信息
+    grid_fc, grid_info = get_feature_collection(stations, lats, lons)
 
     # 定义GEE ImageCollection
     terra_col = ee.ImageCollection("MODIS/MOD09GA_006_NDVI").select('NDVI')
@@ -201,8 +257,8 @@ def main():
     logging.info("已初始化Terra和Aqua NDVI集合")
 
     # 设置日期范围（示例日期）
-    start_date = datetime.date(2015, 7, 7)
-    end_date = datetime.date(2021, 12, 31)
+    start_date = datetime.date(2022, 1, 1)
+    end_date = datetime.date(2024, 12, 31)
 
     # 生成日期序列
     unique_dates = []
@@ -241,7 +297,7 @@ def main():
             # 提交所有任务
             futures = {executor.submit(
                 process_daily_data,
-                date, terra_col, aqua_col, poi_fc, stations, lats, lons, data_path
+                date, terra_col, aqua_col, grid_fc, stations, lats, lons, grid_info, data_path
             ): date for date in tasks}
 
             # 处理完成的任务
@@ -330,6 +386,6 @@ if __name__ == "__main__":
     main()
 
     # 第二步：合并数据（下载完成后运行）
-    data_path = "D:/H8_data"
-    output_nc = os.path.join(data_path, "MODIS_NDVI_combined.nc")
-    merge_modis_data(data_path, output_nc)
+    # data_path = "D:/H8_data"
+    # output_nc = os.path.join(data_path, "MODIS_NDVI_combined.nc")
+    # merge_modis_data(data_path, output_nc)

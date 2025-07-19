@@ -260,6 +260,7 @@ def process_hourly_data(dt, collection, poi_fc, stations, lats, lons, base_path,
             # 获取该小时数据
             image = collection.filterDate(start_dt, end_dt).first()
 
+
             if image is None:
                 logger.warning(f"{start_dt} 没有数据")
                 last_error = (ERROR_CODES["NO_DATA"], f"{start_dt} 没有数据")
@@ -371,6 +372,7 @@ def download_dataset(dataset_type, start_date, end_date, base_path, credentials_
     # 生成时间列表
     hourly_times = generate_hourly_times(start_date, end_date)
     logger.info(f"生成时间范围: {start_date} 到 {end_date}, 共 {len(hourly_times)} 个整点时间")
+
 
     # 获取数据集配置
     config = DATASET_CONFIG[dataset_type]
