@@ -12,9 +12,8 @@ from Py6S import *
 import multiprocessing
 import argparse
 from multiprocessing import shared_memory
-import resource
-import psutil
 import gc
+import traceback
 
 # 路径配置
 PATHS = {
@@ -36,71 +35,136 @@ START_DATE = datetime(2016, 1, 1)
 END_DATE = datetime(2016, 12, 31)
 PROCESS_HOURS = list(range(0, 12)) + list(range(21, 23))
 
-# LUCC到BRDF映射 (保持不变)
+# LUCC到BRDF映射
 LUCC_TO_BRDF = {
     1: {"model": "Rahman", "intensity": 0.3, "asymmetry": 0.1, "structural": 0.5},
     2: {"model": "Rahman", "intensity": 0.35, "asymmetry": 0.12, "structural": 0.55},
-    # ... (其他映射保持不变)
+    3: {"model": "Rahman", "intensity": 0.25, "asymmetry": 0.08, "structural": 0.45},
+    4: {"model": "Rahman", "intensity": 0.3, "asymmetry": 0.1, "structural": 0.5},
+    5: {"model": "Rahman", "intensity": 0.2, "asymmetry": 0.05, "structural": 0.4},
+    6: {"model": "Rahman", "intensity": 0.4, "asymmetry": 0.15, "structural": 0.6},
+    7: {"model": "Rahman", "intensity": 0.35, "asymmetry": 0.12, "structural": 0.55},
+    8: {"model": "Walthall", "param1": 0.5, "param2": 0.2, "param3": 0.1, "albedo": 0.25},
+    9: {"model": "Walthall", "param1": 0.4, "param2": 0.15, "param3": 0.05, "albedo": 0.3},
+    10: {"model": "Lambertian", "albedo": 0.35},
+    11: {"model": "Lambertian", "albedo": 0.1},
+    12: {"model": "Lambertian", "albedo": 0.4},
+    13: {"model": "Walthall", "param1": 0.6, "param2": 0.25, "param3": 0.15, "albedo": 0.35},
+    14: {"model": "Lambertian", "albedo": 0.7},
+    15: {"model": "Lambertian", "albedo": 0.05},
+    16: {"model": "Lambertian", "albedo": 0.02},
+    17: {"model": "Lambertian", "albedo": 0.02},
+    255: {"model": "Lambertian", "albedo": 0.2}
 }
 
-# 大气廓线映射 (保持不变)
+# 大气廓线映射
 LATITUDE_TO_PROFILE = {
     (-90, -30): {5: AtmosProfile.SubarcticWinter, 9: AtmosProfile.SubarcticSummer},
-    # ... (其他映射保持不变)
+    (-30, 30): AtmosProfile.Tropical,
+    (30, 60): {5: AtmosProfile.MidlatitudeWinter, 9: AtmosProfile.MidlatitudeSummer},
+    (60, 90): {5: AtmosProfile.SubarcticWinter, 9: AtmosProfile.SubarcticSummer}
 }
 
-
-def set_memory_limit(percentage=0.75):
-    """设置内存使用限制"""
-    try:
-        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-        total_mem = psutil.virtual_memory().total
-        mem_limit = int(total_mem * percentage)
-        resource.setrlimit(resource.RLIMIT_AS, (mem_limit, hard))
-    except Exception as e:
-        print(f"[{timestamp()}] [WARNING] Memory limit setting failed: {str(e)}")
-
-
-def print_memory_usage():
-    """打印当前内存使用情况"""
-    process = psutil.Process(os.getpid())
-    print(f"[{timestamp()}] Memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-
+# 最大SOZ角度阈值
+MAX_SOZ_ANGLE = 65
 
 def timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-
 def load_netcdf(file_path, variables):
-    """高效加载NetCDF数据 (保持不变)"""
-    # ... (保持不变)
-
-
-def get_atmos_profile(lat, date):
-    """根据纬度和日期获取大气廓线 (保持不变)"""
-    # ... (保持不变)
-
-
-def set_brdf_model(s, lucc_value):
-    """设置BRDF模型 (保持不变)"""
-    # ... (保持不变)
-
-
-def convert_merra2_units(to3, tqv):
-    """转换MERRA2单位 (保持不变)"""
-    # ... (保持不变)
-
-
-def process_station_worker(task):
-    """工作进程：处理单个站点 (增加内存保护)"""
-    station, idx, hourly, merra2_slv, merra2_aer, lucc_dict, coords, date, result_idx = task
+    """高效加载NetCDF数据"""
+    if not os.path.exists(file_path):
+        print(f"[{timestamp()}] [WARNING] File not found: {file_path}")
+        return None
 
     try:
-        # 初始化结果
-        sr_results = np.full(len(BAND_WAVELENGTHS), np.nan, dtype=np.float32)
-        gen_avail = 1
-        valid_flag = 0
+        with nc.Dataset(file_path) as ds:
+            data = {}
+            for var in variables:
+                if var not in ds.variables:
+                    print(f"[{timestamp()}] [WARNING] Variable '{var}' not found in {file_path}")
+                    data[var] = np.array([np.nan])
+                    continue
 
+                var_data = ds.variables[var][:]
+
+                if var == 'Station':
+                    if var_data.dtype.kind in ['S', 'U']:
+                        data[var] = [str(s).strip() for s in var_data]
+                    else:
+                        data[var] = [str(s).strip() for s in var_data]
+                else:
+                    if isinstance(var_data, np.ma.MaskedArray):
+                        var_data = var_data.filled(np.nan)
+
+                    if var == 'AOT550':
+                        var_data = np.where(var_data == -9999.0, np.nan, var_data)
+
+                    data[var] = var_data
+            return data
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] Error loading {file_path}: {str(e)}")
+        return None
+
+def get_atmos_profile(lat, date):
+    """根据纬度和日期获取大气廓线"""
+    if np.isnan(lat):
+        print(f"[{timestamp()}] [WARNING] Latitude is NaN, using default profile")
+        return AtmosProfile.PredefinedType(AtmosProfile.MidlatitudeSummer)
+
+    for (low, high), profile in LATITUDE_TO_PROFILE.items():
+        if low <= lat < high:
+            if isinstance(profile, dict):
+                month_group = 5 if date.month in range(5, 10) else 9
+                selected_profile = profile[month_group]
+                return AtmosProfile.PredefinedType(selected_profile)
+            else:
+                return AtmosProfile.PredefinedType(profile)
+
+    print(f"[{timestamp()}] [WARNING] No profile found for lat {lat}, using default")
+    return AtmosProfile.PredefinedType(AtmosProfile.MidlatitudeSummer)
+
+def set_brdf_model(s, lucc_value):
+    """设置BRDF模型"""
+    try:
+        lucc_int = int(lucc_value)
+        params = LUCC_TO_BRDF.get(lucc_int, LUCC_TO_BRDF[255])
+    except (ValueError, TypeError):
+        print(f"[{timestamp()}] [WARNING] Invalid LUCC value: {lucc_value}, using default")
+        params = LUCC_TO_BRDF[255]
+
+    try:
+        if params["model"] == "Rahman":
+            s.ground_reflectance = GroundReflectance.HomogeneousRahman(
+                params["intensity"], params["asymmetry"], params["structural"])
+        elif params["model"] == "Walthall":
+            s.ground_reflectance = GroundReflectance.HomogeneousWalthall(
+                params["param1"], params["param2"], params["param3"], params["albedo"])
+        else:
+            s.ground_reflectance = GroundReflectance.HomogeneousLambertian(params["albedo"])
+        return s
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] Failed to set BRDF model for LUCC {lucc_value}: {str(e)}")
+        s.ground_reflectance = GroundReflectance.HomogeneousLambertian(0.2)
+        return s
+
+def convert_merra2_units(to3, tqv):
+    """转换MERRA2单位"""
+    if np.isnan(to3) or np.isnan(tqv):
+        return np.nan, np.nan
+    return to3 * 0.001, tqv * 0.1  # Dobson->cm-atm, kg/m²->g/cm²
+
+def process_station_worker(task):
+    """工作进程：处理单个站点"""
+    station, idx, hourly, merra2_slv, merra2_aer, lucc_dict, coords, date, result_idx = task
+    lat, lon = coords.get(station, (np.nan, np.nan))
+
+    # 初始化结果
+    sr_results = np.full(len(BAND_WAVELENGTHS), np.nan, dtype=np.float32)
+    gen_avail = 1
+    valid_flag = 0
+
+    try:
         # 检查数据可用性
         if hourly.get('hourly_availability', [1])[idx] != 0:
             return (result_idx, gen_avail, sr_results, valid_flag)
@@ -113,7 +177,7 @@ def process_station_worker(task):
             angles[angle] = hourly.get(angle, [np.nan])[idx] if idx < len(hourly.get(angle, [])) else np.nan
 
         # 验证角度数据 - 增加SOZ角度阈值检查
-        if any(np.isnan(angles[a]) for a in ANGLE_NAMES) or angles['SOZ'] > 65:
+        if any(np.isnan(angles[a]) for a in ANGLE_NAMES) or angles['SOZ'] > MAX_SOZ_ANGLE:
             return (result_idx, gen_avail, sr_results, valid_flag)
 
         # 获取大气参数
@@ -125,6 +189,7 @@ def process_station_worker(task):
         aot550 = merra2_aer.get('AOT550', [np.nan])[idx] if idx < len(merra2_aer.get('AOT550', [])) else np.nan
 
         # 计算TOA反射率
+        # 注意：输入的Albedo已经是表观反射率乘以cos(SOZ)，因此需要除以cos(SOZ)得到真实反射率
         cos_soz = np.cos(np.radians(angles['SOZ']))
         if cos_soz <= 0.01:
             cos_soz = 0.01
@@ -145,84 +210,69 @@ def process_station_worker(task):
 
         # 创建独立的SixS实例
         s = SixS()
-        s.outputs.suppress_stdout = True
-        s.outputs.suppress_warnings = True
-        s.altitudes.set_sensor_custom_altitude(99)
-        s.aero_profile = AeroProfile.PredefinedType(AeroProfile.Continental)
+        try:
+            s.altitudes.set_sensor_custom_altitude(99)
+            s.aero_profile = AeroProfile.PredefinedType(AeroProfile.Continental)
 
-        # 设置几何参数
-        s.geometry = Geometry.User()
-        s.geometry.solar_z = angles['SOZ']
-        s.geometry.solar_a = angles['SOA']
-        s.geometry.view_z = angles['SAZ']
-        s.geometry.view_a = angles['SAA']
+            # 设置几何参数
+            s.geometry = Geometry.User()
+            s.geometry.solar_z = angles['SOZ']
+            s.geometry.solar_a = angles['SOA']
+            s.geometry.view_z = angles['SAZ']
+            s.geometry.view_a = angles['SAA']
 
-        # 设置大气参数
-        if not np.isnan(water) and not np.isnan(ozone) and water > 0 and ozone > 0:
-            s.atmos_profile = AtmosProfile.UserWaterAndOzone(water, ozone)
-        else:
-            s.atmos_profile = get_atmos_profile(lat, date)
+            # 设置大气参数
+            if not np.isnan(water) and not np.isnan(ozone) and water > 0 and ozone > 0:
+                s.atmos_profile = AtmosProfile.UserWaterAndOzone(water, ozone)
+            else:
+                s.atmos_profile = get_atmos_profile(lat, date)
 
-        # 设置气溶胶
-        if not np.isnan(aot550) and aot550 >= 0:
-            s.aot550 = aot550
+            # 设置气溶胶
+            if not np.isnan(aot550) and aot550 >= 0:
+                s.aot550 = aot550
 
-        # 设置BRDF
-        lucc_value = lucc_dict.get(station, 255)
-        s = set_brdf_model(s, lucc_value)
+            # 设置BRDF
+            lucc_value = lucc_dict.get(station, 255)
+            s = set_brdf_model(s, lucc_value)
 
-        # 处理每个波段
-        for i, (wvl, refl) in enumerate(zip(BAND_WAVELENGTHS, toa_refs)):
-            if np.isnan(refl) or refl < 0 or refl > 1:
-                continue
+            # 处理每个波段
+            for i, (wvl, refl) in enumerate(zip(BAND_WAVELENGTHS, toa_refs)):
+                if np.isnan(refl) or refl < 0 or refl > 1:
+                    continue
 
-            try:
-                s.wavelength = Wavelength(wvl)
-                s.atmos_corr = AtmosCorr.AtmosCorrBRDFFromReflectance(refl)
-                s.run()
-                sr_results[i] = s.outputs.pixel_reflectance
-            except Exception as e:
-                print(f"[{timestamp()}] [WARNING] Band {i} failed for station {station}: {str(e)}")
-                sr_results[i] = np.nan
+                try:
+                    s.wavelength = Wavelength(wvl)
+                    s.atmos_corr = AtmosCorr.AtmosCorrBRDFFromReflectance(refl)
+                    s.run()
+                    sr_results[i] = s.outputs.pixel_reflectance
+                except Exception as e:
+                    print(f"[{timestamp()}] [WARNING] 6S failed for station {station} band {i+1}: {str(e)}")
+                    sr_results[i] = np.nan
 
-        # 如果至少有一个波段有效，则标记为有效
-        if not all(np.isnan(sr_results)):
-            valid_flag = 1
+            # 如果至少有一个波段有效，则标记为有效
+            if not all(np.isnan(sr_results)):
+                valid_flag = 1
 
-        return (result_idx, gen_avail, sr_results, valid_flag)
+        finally:
+            # 确保SixS实例被清理
+            del s
+            gc.collect()
 
-    except MemoryError:
-        print(f"[{timestamp()}] [MEMORY ERROR] Process ran out of memory for station {station}")
-        return (result_idx, 1, np.full(len(BAND_WAVELENGTHS), np.nan), 0)
     except Exception as e:
         print(f"[{timestamp()}] [ERROR] Processing failed for station {station}: {str(e)}")
-        return (result_idx, 1, np.full(len(BAND_WAVELENGTHS), np.nan), 0)
+        traceback.print_exc()
 
-
-def init_worker(shared_mem_name, shape):
-    """初始化工作进程：连接共享内存"""
-    global shared_array
-    try:
-        existing_shm = shared_memory.SharedMemory(name=shared_mem_name)
-        shared_array = np.ndarray(shape, dtype=np.float32, buffer=existing_shm.buf)
-    except Exception as e:
-        print(f"[{timestamp()}] [ERROR] Worker init failed: {str(e)}")
-        raise
-
+    return (result_idx, gen_avail, sr_results, valid_flag)
 
 def process_hour(date, hour, stations, lucc_dict, station_coords):
-    """处理单小时数据 (改进的内存管理)"""
-    # 设置内存限制
-    set_memory_limit(0.75)
-
+    """处理单小时数据 - 使用共享内存并行架构"""
     date_str = date.strftime("%Y%m%d")
     hour_str = f"{hour * 100:04d}"
     time_key = f"{date_str}_{hour_str}"
 
     # 文件路径
     paths = {
-        "sozSR": os.path.join(PATHS["hourly_sozSR"], date_str[:4], date_str[4:6],
-                              f"H8_hourly_sozSR_angles_{time_key}.nc"),
+        "sozSR": os.path.join(PATHS["hourly_sozSR"], date_str[:4], date_str[4:6], f"H8_hourly_sozSR_angles_{time_key}.nc"),
         "merra_slv": os.path.join(PATHS["merra2_slv"], date_str[:4], date_str[4:6], f"MERRA2_{time_key}_TO3_TQV.nc"),
         "merra_aer": os.path.join(PATHS["merra2_aer"], date_str[:4], date_str[4:6], f"MERRA2_{time_key}_AOT550.nc"),
         "output": os.path.join(PATHS["output"], f"SR_{time_key}.nc")
@@ -241,8 +291,6 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
 
     # 加载数据
     print(f"[{timestamp()}] [INFO] Loading data for {time_key}")
-    print_memory_usage()
-
     hourly = load_netcdf(paths["sozSR"], ['Station'] + BAND_NAMES + ANGLE_NAMES + ['hourly_availability'])
     merra2_slv = load_netcdf(paths["merra_slv"], ['Station', 'TO3', 'TQV'])
     merra2_aer = load_netcdf(paths["merra_aer"], ['Station', 'AOT550'])
@@ -253,6 +301,10 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
 
     # 检查站点匹配
     hourly_stations = hourly.get('Station', [])
+    merra2_slv_stations = merra2_slv.get('Station', [])
+    merra2_aer_stations = merra2_aer.get('Station', [])
+
+    # 创建站点索引
     station_idx = {s: i for i, s in enumerate(hourly_stations)}
     matched = [s for s in stations if s in station_idx]
 
@@ -268,53 +320,54 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
     sr_shape = (num_stations, len(BAND_WAVELENGTHS))
     sr_shm = None
     flags_shm = None
-
     try:
-        sr_shm = shared_memory.SharedMemory(create=True, size=int(np.prod(sr_shape) * int(np.float32().itemsize)))
+        sr_shm = shared_memory.SharedMemory(create=True, size=int(np.prod(sr_shape) * np.float32().itemsize))
         sr_array = np.ndarray(sr_shape, dtype=np.float32, buffer=sr_shm.buf)
         sr_array[:] = np.nan
 
         # 创建共享内存 (存储标志)
         flags_shape = (num_stations, 2)  # [gen_avail, valid_flag]
-        flags_shm = shared_memory.SharedMemory(create=True, size=int(np.prod(flags_shape) * int(np.int8().itemsize)))
+        flags_shm = shared_memory.SharedMemory(create=True, size=int(np.prod(flags_shape) * np.int8().itemsize))
         flags_array = np.ndarray(flags_shape, dtype=np.int8, buffer=flags_shm.buf)
         flags_array[:] = -1  # 初始化为-1
 
         # 准备任务
-        tasks = [(station, station_idx[station], hourly, merra2_slv, merra2_aer, lucc_dict, station_coords, date,
-                  station_map[station])
-                 for station in matched]
+        tasks = []
+        for station in matched:
+            idx = station_idx[station]
+            sidx = station_map[station]
+            tasks.append((station, idx, hourly, merra2_slv, merra2_aer, lucc_dict, station_coords, date, sidx))
 
         # 并行处理
         start_time = time.time()
         valid_count = 0
         total_matched = len(matched)
 
-        # 分批处理任务 (每批100个站点)
-        batch_size = 100
+        # 限制最大工作进程数
+        max_workers = min(8, multiprocessing.cpu_count())  # 减少工作进程数来降低内存压力
+        print(f"[{timestamp()}] [INFO] Processing {len(tasks)} stations with {max_workers} workers")
+
         with ProcessPoolExecutor(
-                max_workers=min(6, multiprocessing.cpu_count()),  # 减少工作进程数
+                max_workers=max_workers,
                 initializer=init_worker,
                 initargs=(sr_shm.name, sr_shape)
         ) as executor:
-            for i in range(0, len(tasks), batch_size):
-                batch = tasks[i:i + batch_size]
-                futures = {executor.submit(process_station_worker, task): task for task in batch}
+            futures = {executor.submit(process_station_worker, task): task for task in tasks}
 
-                for future in as_completed(futures):
-                    try:
-                        result_idx, gen_avail, sr_results, valid_flag = future.result()
-                        sr_array[result_idx] = sr_results
-                        flags_array[result_idx, 0] = gen_avail
-                        flags_array[result_idx, 1] = valid_flag
-                        if valid_flag == 1:
-                            valid_count += 1
-                    except Exception as e:
-                        print(f"[{timestamp()}] [ERROR] Task failed: {str(e)}")
+            for future in as_completed(futures):
+                try:
+                    result_idx, gen_avail, sr_results, valid_flag = future.result()
 
-                # 每批处理完后强制垃圾回收
-                gc.collect()
-                print_memory_usage()
+                    # 更新共享内存
+                    sr_array[result_idx] = sr_results
+                    flags_array[result_idx, 0] = gen_avail
+                    flags_array[result_idx, 1] = valid_flag
+
+                    if valid_flag == 1:
+                        valid_count += 1
+                except Exception as e:
+                    print(f"[{timestamp()}] [ERROR] Task failed: {str(e)}")
+                    traceback.print_exc()
 
         # 复制结果到本地内存
         sr_results_local = sr_array.copy()
@@ -322,57 +375,102 @@ def process_hour(date, hour, stations, lucc_dict, station_coords):
         valid_flags_local = flags_array[:, 1].copy()
 
         # 保存结果
-        os.makedirs(os.path.dirname(paths["output"]), exist_ok=True)
-        with nc.Dataset(paths["output"], 'w') as ds:
-            ds.createDimension('station', num_stations)
-            station_var = ds.createVariable('Station', str, ('station',))
-            station_var[:] = np.array(stations, dtype=object)
+        try:
+            os.makedirs(os.path.dirname(paths["output"]), exist_ok=True)
+            with nc.Dataset(paths["output"], 'w') as ds:
+                ds.createDimension('station', num_stations)
 
-            gen_var = ds.createVariable('General_availability', 'i1', ('station',))
-            gen_var[:] = gen_avail_local
+                # 站点变量
+                station_var = ds.createVariable('Station', str, ('station',))
+                station_var[:] = np.array(stations, dtype=object)
 
-            valid_var = ds.createVariable('valid_flag', 'i1', ('station',))
-            valid_var[:] = valid_flags_local
+                # 可用性变量
+                gen_var = ds.createVariable('General_availability', 'i1', ('station',))
+                gen_var[:] = gen_avail_local
 
-            for i, band in enumerate(BAND_NAMES):
-                band_var = ds.createVariable(band, 'f4', ('station',))
-                band_var[:] = sr_results_local[:, i]
-                band_var.units = "reflectance"
+                # 有效性标志
+                valid_var = ds.createVariable('valid_flag', 'i1', ('station',))
+                valid_var[:] = valid_flags_local
 
-            ds.date_created = timestamp()
-            ds.title = 'Himawari-8 Surface Reflectance'
-            ds.time = hour_str
-            ds.date = date_str
-            ds.source = "6S atmospheric correction with BRDF"
+                # 波段数据
+                for i, band in enumerate(BAND_NAMES):
+                    band_var = ds.createVariable(band, 'f4', ('station',))
+                    band_var[:] = sr_results_local[:, i]
+                    band_var.units = "reflectance"
 
-        ratio = valid_count / total_matched if total_matched > 0 else 0
-        elapsed = time.time() - start_time
-        print(
-            f"[{timestamp()}] [SUCCESS] Saved {paths['output']} - Valid: {valid_count}/{total_matched} ({ratio:.1%}) in {elapsed:.1f}s")
-        return paths["output"], (valid_count, total_matched, ratio)
+                # 元数据
+                ds.date_created = timestamp()
+                ds.title = 'Himawari-8 Surface Reflectance'
+                ds.time = hour_str
+                ds.date = date_str
+                ds.source = "6S atmospheric correction with BRDF"
 
-    except Exception as e:
-        print(f"[{timestamp()}] [ERROR] Processing failed for {time_key}: {str(e)}")
-        return None, (0, 0, 0.0)
+            ratio = valid_count / total_matched if total_matched > 0 else 0
+            elapsed = time.time() - start_time
+            print(f"[{timestamp()}] [SUCCESS] Saved {paths['output']} - Valid: {valid_count}/{total_matched} ({ratio:.1%}) in {elapsed:.1f}s")
+            return paths["output"], (valid_count, total_matched, ratio)
+        except Exception as e:
+            print(f"[{timestamp()}] [ERROR] Save failed for {paths['output']}: {str(e)}")
+            return None, (0, 0, 0.0)
 
     finally:
         # 确保共享内存被清理
-        if sr_shm is not None:
+        if sr_shm:
             sr_shm.close()
             sr_shm.unlink()
-        if flags_shm is not None:
+        if flags_shm:
             flags_shm.close()
             flags_shm.unlink()
-        gc.collect()
 
+def init_worker(shared_mem_name, shape):
+    """初始化工作进程：连接共享内存"""
+    global shared_array
+    try:
+        existing_shm = shared_memory.SharedMemory(name=shared_mem_name)
+        shared_array = np.ndarray(shape, dtype=np.float32, buffer=existing_shm.buf)
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] Worker init failed: {str(e)}")
+        raise
 
-# ... (load_lucc, load_coords函数保持不变)
+def load_lucc():
+    """加载LUCC数据"""
+    try:
+        with nc.Dataset(PATHS["lucc"]) as ds:
+            stations = [str(s).strip() for s in ds.variables['Station'][:]]
+            lucc = ds.variables['LC_type1'][0, :]
+            if isinstance(lucc, np.ma.MaskedArray):
+                lucc = lucc.filled(255)
+            lucc_dict = dict(zip(stations, lucc))
+            print(f"[{timestamp()}] [INFO] Loaded LUCC for {len(lucc_dict)} stations")
+            return lucc_dict
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] LUCC load failed: {str(e)}")
+        return None
+
+def load_coords():
+    """加载站点坐标"""
+    try:
+        with nc.Dataset(PATHS["luts"]) as ds:
+            stations = [str(s).strip() for s in ds.variables['Station'][:]]
+            lats = ds.variables['Lat'][:]
+            lons = ds.variables['Lon'][:]
+
+            if isinstance(lats, np.ma.MaskedArray):
+                lats = lats.filled(np.nan)
+            if isinstance(lons, np.ma.MaskedArray):
+                lons = lons.filled(np.nan)
+
+            coords = {s: (lat, lon) for s, lat, lon in zip(stations, lats, lons)}
+            print(f"[{timestamp()}] [INFO] Loaded coordinates for {len(coords)} stations")
+            return coords
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] Coords load failed: {str(e)}")
+        return {}
 
 def main():
-    """主处理函数 - 使用任务分片机制 (增加内存监控)"""
+    """主处理函数 - 使用任务分片机制"""
     start = time.time()
     print(f"[{timestamp()}] [START] Processing from {START_DATE} to {END_DATE}")
-    print_memory_usage()
 
     # 准备目录
     os.makedirs(PATHS["output"], exist_ok=True)
@@ -423,8 +521,7 @@ def main():
         end_idx = total_tasks
 
     tasks = tasks[start_idx:end_idx]
-    print(
-        f"[{timestamp()}] [SHARD] Processing tasks {start_idx + 1}-{end_idx} of {total_tasks} (Shard {args.shard_id + 1}/{args.total_shards})")
+    print(f"[{timestamp()}] [SHARD] Processing tasks {start_idx + 1}-{end_idx} of {total_tasks} (Shard {args.shard_id + 1}/{args.total_shards})")
 
     # 处理任务
     processed = []
@@ -435,7 +532,6 @@ def main():
         date, hour, *_ = task
         time_key = f"{date.strftime('%Y%m%d')}_{hour * 100:04d}"
         print(f"[{timestamp()}] [PROCESSING] {time_key}")
-        print_memory_usage()
 
         result, stats = process_hour(*task)
         if result:
@@ -443,9 +539,6 @@ def main():
             v, t, _ = stats
             total_valid += v
             total_stations += t
-
-        # 每个任务后垃圾回收
-        gc.collect()
 
     # 最终统计
     hours = (time.time() - start) / 3600
@@ -456,7 +549,6 @@ def main():
     print(f"  Total stations: {total_stations}")
     print(f"  Valid stations: {total_valid} ({ratio:.1%})")
     print(f"  Total time: {hours:.2f} hours")
-
 
 if __name__ == "__main__":
     # 设置多进程启动方法
