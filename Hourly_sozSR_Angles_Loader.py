@@ -188,8 +188,8 @@ if __name__ == "__main__":
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # 设置日期范围
-    start_date = datetime(2015, 7, 7)
-    end_date = datetime(2015, 12, 31)
+    start_date = datetime(2016, 1, 1)
+    end_date = datetime(2021, 12, 31)
 
     # 添加详细日志
     logger.addHandler(logging.StreamHandler(sys.stdout))

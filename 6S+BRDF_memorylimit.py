@@ -31,8 +31,8 @@ BAND_NAMES = ['Albedo_01', 'Albedo_02', 'Albedo_03', 'Albedo_04', 'Albedo_05', '
 ANGLE_NAMES = ['SAZ', 'SAA', 'SOZ', 'SOA']
 
 # 处理范围
-START_DATE = datetime(2016, 1, 1)
-END_DATE = datetime(2016, 12, 31)
+START_DATE = datetime(2015, 7, 7)
+END_DATE = datetime(2021, 12, 31)
 PROCESS_HOURS = list(range(0, 12)) + list(range(21, 23))
 
 # LUCC到BRDF映射
