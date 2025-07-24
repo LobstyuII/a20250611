@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger()
 
 # 配置路径和参数
-HOURLY_DIR = r'D:\H8_data\Hourly_TOA_Angles'
+HOURLY_DIR = r'D:\H8_data\Hourly_sozSR_Angles'
 OUTPUT_DIR = r'D:\H8_data\NDVI_TimeSeries'
 TEMP_DIR = r'D:\H8_data\NDVI_Temp'  # 临时处理目录
 MAX_WORKERS = max(1, mp.cpu_count() - 2)  # 使用大部分CPU核心
@@ -25,12 +25,12 @@ DAILY_BATCH_SIZE = 30  # 每天处理的天数批次大小
 
 # 设置日期范围
 start_date = datetime(2015, 7, 7)
-end_date = datetime(2018, 12, 31)
+end_date = datetime(2021, 12, 31)
 
 
 def get_all_stations():
     """获取所有站点名称"""
-    sample_pattern = os.path.join(HOURLY_DIR, '2015', '07', 'H8_hourly_TOA_angles_20150707_*.nc')
+    sample_pattern = os.path.join(HOURLY_DIR, '2015', '07', 'H8_hourly_sozSR_angles_20150707_*.nc')
     sample_files = glob.glob(sample_pattern)
 
     if not sample_files:
@@ -47,7 +47,7 @@ def get_time_index():
     time_index = []
     current_date = start_date
     while current_date <= end_date:
-        for hour in list(range(0, 12)) + list(range(21, 24)):
+        for hour in list(range(0, 12)) + list(range(21, 23)):
             time_index.append(datetime(current_date.year, current_date.month,
                                        current_date.day, hour))
         current_date += timedelta(days=1)
@@ -67,7 +67,7 @@ def get_daily_file_paths():
         for hour in list(range(0, 12)) + list(range(21, 24)):
             file_pattern = os.path.join(
                 HOURLY_DIR, f"{year}", month,
-                f"H8_hourly_TOA_angles_{year}{month}{day}_{hour:02d}00.nc"
+                f"H8_hourly_sozSR_angles_{year}{month}{day}_{hour:02d}00.nc"
             )
             matching_files = glob.glob(file_pattern)
             if matching_files:

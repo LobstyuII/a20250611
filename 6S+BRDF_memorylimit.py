@@ -1,7 +1,3 @@
-# python 6S+BRDF_ulti.py --shard-id 0 --total-shards 3
-# python 6S+BRDF_ulti.py --shard-id 1 --total-shards 3
-# python 6S+BRDF_ulti.py --shard-id 2 --total-shards 3
-
 import os
 import time
 import netCDF4 as nc
@@ -31,8 +27,8 @@ BAND_NAMES = ['Albedo_01', 'Albedo_02', 'Albedo_03', 'Albedo_04', 'Albedo_05', '
 ANGLE_NAMES = ['SAZ', 'SAA', 'SOZ', 'SOA']
 
 # 处理范围
-START_DATE = datetime(2015, 7, 7)
-END_DATE = datetime(2021, 12, 31)
+START_DATE = datetime(2017, 1, 1)
+END_DATE = datetime(2017, 12, 31)
 PROCESS_HOURS = list(range(0, 12)) + list(range(21, 23))
 
 # LUCC到BRDF映射

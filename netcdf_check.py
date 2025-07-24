@@ -100,8 +100,10 @@ def print_nc_file_details(file_path):
 
 if __name__ == "__main__":
     # 指定要查看的文件路径
-    file_path = r"D:\H8_data\Air\2015\07\Air_20150701_0500.nc"
-    file_path = r"D:\H8_data\MERRA2_aer\2018\02\MERRA2_20180202_0000_AOT550.nc"
+    file_path = r"D:\H8_data\Station_deprecated.nc"
+    file_path = r"D:/H8_Data/H8SR/SR_20150709_0500.nc" # 6S+BRDF_memorylimit.py
+    # file_path = r"D:/H8_Data/H8SR/SR_20170209_0500.nc" # 6S+BRDF.py
+    file_path = r"D:\H8_data\Hourly_sozSR_Angles\2015\07/H8_hourly_sozSR_angles_20150709_0500.nc"
 
 
     # 打印文件详细信息

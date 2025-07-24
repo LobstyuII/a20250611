@@ -266,10 +266,14 @@ def get_l1_ftp_path(date, hour, minute):
 def get_l2_ftp_path(date, hour, minute):
     """获取L2数据的FTP路径"""
     satellite_prefix = get_satellite_prefix(date)
-    return (f"/pub/himawari/L2/ARP/030/{date.year:04d}{date.month:02d}/"
+
+    # 2022年10月1日之后使用031路径
+    version = "031" if date >= datetime.date(2022, 10, 1) else "030"
+
+    return (f"/pub/himawari/L2/ARP/{version}/{date.year:04d}{date.month:02d}/"
             f"{date.day:02d}/{hour:02d}/"
             f"NC_{satellite_prefix}_{date.year:04d}{date.month:02d}{date.day:02d}_"
-            f"{hour:02d}{minute:02d}_L2ARP030_FLDK.02401_02401.nc")
+            f"{hour:02d}{minute:02d}_L2ARP{version}_FLDK.02401_02401.nc")
 
 
 def get_l3_ftp_path(date, hour):
