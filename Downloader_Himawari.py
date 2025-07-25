@@ -409,7 +409,7 @@ def process_l2_file(l2_file_path, lookup_df, output_path):
             # 创建维度
             ds_out.createDimension('Station', len(lookup_df))
 
-            # 创建变量
+            # 创建变量 - 修复字符串变量类型
             station_var = ds_out.createVariable('Station', str, ('Station',))
             data_avail_var = ds_out.createVariable('Data_Availability', 'i1', ('Station',))
             land_water_var = ds_out.createVariable('Land_Water_Flag', 'i1', ('Station',))
@@ -490,8 +490,8 @@ def process_l2_file(l2_file_path, lookup_df, output_path):
                     snow_ices.append(snow_ice)
                     turbid_waters.append(turbid_water)
 
-                # 将数据写入变量
-                station_var[:] = np.array(station_names, dtype='S')
+                # 将数据写入变量 - 修复字符串赋值方式
+                station_var[:] = np.array(station_names, dtype='S')  # 转为字节串数组
                 data_avail_var[:] = data_avails
                 land_water_var[:] = land_waters
                 cloud_flag_var[:] = cloud_flags
@@ -506,8 +506,13 @@ def process_l2_file(l2_file_path, lookup_df, output_path):
                 snow_ice_var[:] = snow_ices
                 turbid_water_var[:] = turbid_waters
 
+        # 添加成功日志和返回值
+        logger.info(f"成功处理并保存L2小文件: {output_path}")
+        return True  # 关键修复：返回处理成功标识
+
     except Exception as e:
-        print(f"处理文件时出错: {e}")
+        logger.error(f"处理L2文件失败: {e}")  # 改用logger输出错误
+        return False  # 关键修复：返回处理失败标识
 
 
 def process_l3_file(l3_file_path, lookup_df, output_path):
