@@ -414,8 +414,16 @@ def process_l2_file(l2_file_path, lookup_df, output_path):
             data_avail_var = ds_out.createVariable('Data_Availability', 'i1', ('Station',))
             land_water_var = ds_out.createVariable('Land_Water_Flag', 'i1', ('Station',))
             cloud_flag_var = ds_out.createVariable('Cloud_Flag', 'i1', ('Station',))
-            aot_var = ds_out.createVariable('AOT', 'f4', ('Station',))
-            aot_uncertainty_var = ds_out.createVariable('AOT_Uncertainty', 'f4', ('Station',))
+            retrieval_status_var = ds_out.createVariable('Retrieval_Status', 'i1', ('Station',))
+            aot_confidence_var = ds_out.createVariable('AOT_Confidence', 'i1', ('Station',))
+            ae_confidence_var = ds_out.createVariable('AE_Confidence', 'i1', ('Station',))
+            ssa_confidence_var = ds_out.createVariable('SSA_Confidence', 'i1', ('Station',))
+            add_cloud_flag_var = ds_out.createVariable('Additional_Cloud_Flag', 'i1', ('Station',))
+            sunglint_var = ds_out.createVariable('Sunglint', 'i1', ('Station',))
+            angle_threshold_var = ds_out.createVariable('Angle_Threshold', 'i1', ('Station',))
+            surf_ref_conf_var = ds_out.createVariable('Surface_Reflectance_Confidence', 'i1', ('Station',))
+            snow_ice_var = ds_out.createVariable('Snow_Ice', 'i1', ('Station',))
+            turbid_water_var = ds_out.createVariable('Turbid_Water', 'i1', ('Station',))
 
             # 添加时间属性
             filename = os.path.basename(l2_file_path)
@@ -426,16 +434,22 @@ def process_l2_file(l2_file_path, lookup_df, output_path):
             with nc.Dataset(l2_file_path, 'r') as dataset:
                 # 获取变量
                 qa_flag_var = dataset.variables['QA_flag']
-                aot_var_in = dataset.variables['AOT']  # 500nm气溶胶光学厚度
-                aot_uncertainty_var_in = dataset.variables['AOT_uncertainty']  # 气溶胶光学厚度不确定性
 
                 # 初始化列表
                 station_names = []
                 data_avails = []
                 land_waters = []
                 cloud_flags = []
-                aots = []
-                aot_uncertainties = []
+                retrieval_statuses = []
+                aot_confidences = []
+                ae_confidences = []
+                ssa_confidences = []
+                add_cloud_flags = []
+                sunglints = []
+                angle_thresholds = []
+                surf_ref_confs = []
+                snow_ices = []
+                turbid_waters = []
 
                 # 遍历每个站点，提取数据
                 for _, row in lookup_df.iterrows():
@@ -445,34 +459,55 @@ def process_l2_file(l2_file_path, lookup_df, output_path):
 
                     # 直接读取单个点的值
                     qa_value = qa_flag_var[l2arp_y, l2arp_x]
-                    aot_value = aot_var_in[l2arp_y, l2arp_x]
-                    aot_uncertainty_value = aot_uncertainty_var_in[l2arp_y, l2arp_x]
 
-                    # 提取前三个比特位的值
-                    data_avail = qa_value & 1
-                    land_water = (qa_value >> 1) & 1
-                    cloud_flag = (qa_value >> 2) & 1
+                    # 提取各比特位的值
+                    data_avail = qa_value & 1  # 比特0: Data Availability
+                    land_water = (qa_value >> 1) & 1  # 比特1: Land/Water Flag
+                    cloud_flag = (qa_value >> 2) & 1  # 比特2: Cloud Flag
+                    retrieval_status = (qa_value >> 3) & 1  # 比特3: Retrieval status
+                    aot_confidence = (qa_value >> 4) & 0x03  # 比特4-5: AOT confidence
+                    ae_confidence = (qa_value >> 6) & 0x03  # 比特6-7: AE confidence
+                    ssa_confidence = (qa_value >> 8) & 0x03  # 比特8-9: SSA confidence
+                    add_cloud_flag = (qa_value >> 10) & 1  # 比特10: Additional Cloud Flag
+                    sunglint = (qa_value >> 11) & 1  # 比特11: Sunglint
+                    angle_threshold = (qa_value >> 12) & 1  # 比特12: Solz/Satz > 70
+                    surf_ref_conf = (qa_value >> 13) & 1  # 比特13: Surface Reflectance Confidence
+                    snow_ice = (qa_value >> 14) & 1  # 比特14: Snow/Ice
+                    turbid_water = (qa_value >> 15) & 1  # 比特15: Turbid Water
 
                     station_names.append(station_name)
                     data_avails.append(data_avail)
                     land_waters.append(land_water)
                     cloud_flags.append(cloud_flag)
-                    aots.append(aot_value)
-                    aot_uncertainties.append(aot_uncertainty_value)
+                    retrieval_statuses.append(retrieval_status)
+                    aot_confidences.append(aot_confidence)
+                    ae_confidences.append(ae_confidence)
+                    ssa_confidences.append(ssa_confidence)
+                    add_cloud_flags.append(add_cloud_flag)
+                    sunglints.append(sunglint)
+                    angle_thresholds.append(angle_threshold)
+                    surf_ref_confs.append(surf_ref_conf)
+                    snow_ices.append(snow_ice)
+                    turbid_waters.append(turbid_water)
 
-            # 写入数据
-            station_var[:] = np.array(station_names, dtype='S')
-            data_avail_var[:] = np.array(data_avails, dtype=np.int8)
-            land_water_var[:] = np.array(land_waters, dtype=np.int8)
-            cloud_flag_var[:] = np.array(cloud_flags, dtype=np.int8)
-            aot_var[:] = np.array(aots, dtype=np.float32)
-            aot_uncertainty_var[:] = np.array(aot_uncertainties, dtype=np.float32)
+                # 将数据写入变量
+                station_var[:] = np.array(station_names, dtype='S')
+                data_avail_var[:] = data_avails
+                land_water_var[:] = land_waters
+                cloud_flag_var[:] = cloud_flags
+                retrieval_status_var[:] = retrieval_statuses
+                aot_confidence_var[:] = aot_confidences
+                ae_confidence_var[:] = ae_confidences
+                ssa_confidence_var[:] = ssa_confidences
+                add_cloud_flag_var[:] = add_cloud_flags
+                sunglint_var[:] = sunglints
+                angle_threshold_var[:] = angle_thresholds
+                surf_ref_conf_var[:] = surf_ref_confs
+                snow_ice_var[:] = snow_ices
+                turbid_water_var[:] = turbid_waters
 
-        logger.info(f"成功处理并保存L2小文件: {output_path}")
-        return True
     except Exception as e:
-        logger.error(f"处理L2文件失败: {e}")
-        return False
+        print(f"处理文件时出错: {e}")
 
 
 def process_l3_file(l3_file_path, lookup_df, output_path):
