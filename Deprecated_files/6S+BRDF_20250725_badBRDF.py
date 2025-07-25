@@ -1,4 +1,4 @@
-# python 6S+BRDF.py
+# python 6S+BRDF_20250725_badBRDF.py
 
 import os
 import time
@@ -64,7 +64,7 @@ LATITUDE_TO_PROFILE = {
 }
 
 # 最大SOZ角度阈值
-MAX_SOZ_ANGLE = 65
+MAX_SOZ_ANGLE = 70
 
 
 def timestamp():
