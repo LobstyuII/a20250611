@@ -102,9 +102,16 @@ if __name__ == "__main__":
     # 指定要查看的文件路径
     file_path = r"D:\H8_data\LUTs.nc"
     # file_path = r"D:/H8_Data/H8SR/SR_20150709_0500.nc" # 6S+BRDF_memorylimit.py
-    # file_path = r"D:/H8_Data/H8SR/SR_20170209_0500.nc" # 6S+BRDF.py
-    file_path = r"D:\H8_data\H8L2ARP\2015\07\H8L2ARP_20150707_0130.nc"
-    # file_path = r"D:\H8_data\H8L1\2015\07\H8_20150711_0450.nc"
+    # file_path = r"D:/H8_Data/H8SR/SR_20170209_0500.nc" # 6S+BRDF_20250725_badBRDF.py
+    file_path = r"D:\H8_data\MODIS_NDVI_nadir\2015\07\MODIS_NDVI_nadir_20150707.nc"
+    # file_path = r"D:\H8_data\MODIS_NDVI_MOD13A1\2015\07\MOD13A1_NDVI_20150707.nc"
+    # file_path = r"D:\H8_data\H8SR\H8SR_20170101_0200.nc"
+    # file_path = r"D:\H8_data\MODIST_RSRs.nc"
+    # file_path = r"D:\H8_data\H8_RSRs.nc"
+    # file_path = r"D:\H8_data\USGS\Deciduous.nc"
+    # file_path = r"D:/H8_data\LC_resampled_2015_2024.nc"
+    # file_path = r"D:\H8_data\Himawari_BRDF_Albedo\2015\07\Himawari_adjusted_BRDF_Albedo_20150707.nc"
+    # file_path = r"D:\H8_data\MODIS_BRDF_Albedo\2015\07\MODIS_BRDF_Albedo_20150707.nc"
 
 
     # 打印文件详细信息

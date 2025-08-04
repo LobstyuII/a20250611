@@ -1,163 +1,115 @@
+import pyarrow.parquet as pq
+import pyarrow as pa
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from datetime import datetime
+import os
 
-# 设置字体以支持中文和英文显示
-plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC", "DejaVu Sans"]
-sns.set_style("whitegrid")
 
-# 配置参数
-INPUT_FILE = r"D:\H8_data\rain_events_all_stations.parquet"  # 输入文件路径
+def print_parquet_file_details(file_path):
+    """打印Parquet文件的详细内容"""
+    print(f"正在分析文件: {file_path}")
 
-def analyze_rain_events(file_path):
-    """
-    分析降雨事件数据集并生成详细报告
+    if not os.path.exists(file_path):
+        print(f"文件不存在: {file_path}")
+        return
 
-    :param file_path: Parquet文件路径
-    """
-    # 1. 加载数据
-    print(f"Loading data from {file_path}...")
     try:
-        # 尝试使用pyarrow读取
-        df = pd.read_parquet(file_path, engine='pyarrow')
-        print(f"Successfully loaded {len(df):,} records using pyarrow")
-    except Exception as e:
-        print(f"Error loading file with pyarrow: {e}")
+        # 读取Parquet文件
+        parquet_file = pq.ParquetFile(file_path)
+
+        # 打印文件基本信息
+        print("\n=== 文件基本信息 ===")
+        print(f"文件格式: Parquet")
+        print(f"版本: {parquet_file.metadata.format_version}")
+        print(f"创建者: {parquet_file.metadata.created_by}")
+        print(f"行组数量: {parquet_file.num_row_groups}")
+        print(f"总行数: {parquet_file.metadata.num_rows}")
+        print(f"列数: {parquet_file.metadata.num_columns}")
+
+        # 获取schema
+        schema = parquet_file.schema_arrow
+
+        # 打印Schema信息
+        print("\n=== Schema信息 ===")
+        print(schema)
+
+        # 打印列详细信息
+        print("\n=== 列详细信息 ===")
+        # 正确获取字段数量
+        field_count = len(schema.names)
+        for i in range(field_count):
+            field = schema.field(i)
+            print(f"\n列名: {field.name}")
+            print(f"  类型: {field.type}")
+            print(f"  可为空: {field.nullable}")
+            if field.metadata:
+                print("  元数据:")
+                for key, value in field.metadata.items():
+                    # 处理字节串类型的元数据值
+                    if isinstance(value, bytes):
+                        try:
+                            decoded_value = value.decode('utf-8')
+                        except UnicodeDecodeError:
+                            decoded_value = "<binary data>"
+                    else:
+                        decoded_value = str(value)
+                    print(f"    {key}: {decoded_value}")
+
+        # 读取前5行数据
+        print("\n=== 前5行数据 ===")
         try:
-            # 尝试使用fastparquet读取
-            df = pd.read_parquet(file_path, engine='fastparquet')
-            print(f"Successfully loaded {len(df):,} records using fastparquet")
-        except Exception as e2:
-            print(f"Error loading file with fastparquet: {e2}")
-            print("请确保pyarrow或fastparquet正确安装且版本兼容")
-            print("你可以尝试以下命令安装：")
-            print("pip install pyarrow fastparquet")
-            return
+            # 使用PyArrow读取前5行
+            table = pq.read_table(
+                file_path,
+                use_threads=True,
+                memory_map=True,
+                columns=None,
+                n_rows=5
+            )
+            df = table.to_pandas()
 
-    # 定义颜色调色板
-    n_classes = df['Intensity_Class'].nunique()
-    palette = sns.color_palette("tab10", n_colors=n_classes)
+            # 格式化打印DataFrame
+            with pd.option_context('display.max_columns', None,
+                                   'display.width', None,
+                                   'display.max_colwidth', 20):
+                print(df)
+        except Exception as e:
+            print(f"读取数据时出错: {e}")
 
-    # 2. 基本数据集信息
-    print("\n===== Dataset Overview =====")
-    print(f"Total records: {len(df):,}")
-    print(f"Total stations: {df['Station'].nunique():,}")
-    print(f"Time range: {df['Start_Time'].min()} to {df['End_Time'].max()}")
-    print(f"Years covered: {df['Year'].unique()}")
+        # 打印列统计信息（基于元数据）
+        print("\n=== 列统计信息（基于元数据）===")
+        for rg in range(parquet_file.num_row_groups):
+            row_group = parquet_file.metadata.row_group(rg)
+            print(f"\n行组 {rg}:")
+            print(f"  行数: {row_group.num_rows}")
+            print(f"  总字节大小: {row_group.total_byte_size / 1024:.2f} KB")
 
-    # 3. 数据结构信息
-    print("\n===== Data Structure =====")
-    print("Columns and data types:")
-    print(df.dtypes)
-    print("\nMissing values per column:")
-    print(df.isnull().sum())
+            for col_idx in range(row_group.num_columns):
+                col_meta = row_group.column(col_idx)
+                stats = col_meta.statistics
+                col_name = col_meta.path_in_schema
+                print(f"\n  列: {col_name}")
 
-    # 4. 数值型变量分析
-    print("\n===== Numerical Variables Analysis =====")
-    num_cols = ['Duration_hours', 'Total_Rain_mm', 'Avg_Intensity_mmh',
-                'Max_Intensity_mmh', 'Rainy_Hours']
-    print(df[num_cols].describe().applymap(lambda x: f"{x:.2f}"))
-
-    # 5. 分类变量分析
-    print("\n===== Categorical Variables Analysis =====")
-    print("Rain intensity class distribution:")
-    class_dist = df['Intensity_Class'].value_counts(normalize=True) * 100
-    print(class_dist.apply(lambda x: f"{x:.1f}%"))
-
-    # 6. 时间序列分析
-    print("\n===== Temporal Analysis =====")
-    df['Start_YearMonth'] = df['Start_Time'].dt.to_period('M')
-    monthly_events = df.groupby('Start_YearMonth').size()
-    print("Events per month:")
-    print(monthly_events.tail(12))  # 显示最近12个月
-
-    # 7. 极端值检测
-    print("\n===== Extreme Values Detection =====")
-    print("Longest duration events:")
-    print(df.nlargest(5, 'Duration_hours')[['Station', 'Start_Time', 'Duration_hours', 'Total_Rain_mm']])
-
-    print("\nHighest total rainfall events:")
-    print(df.nlargest(5, 'Total_Rain_mm')[['Station', 'Start_Time', 'Total_Rain_mm', 'Duration_hours']])
-
-    print("\nHighest intensity events:")
-    print(df.nlargest(5, 'Max_Intensity_mmh')[['Station', 'Start_Time', 'Max_Intensity_mmh', 'Total_Rain_mm']])
-
-    # 8. 数据质量检查
-    print("\n===== Data Quality Checks =====")
-    # 检查持续时间是否合理
-    calculated_duration = (df['End_Time'] - df['Start_Time']).dt.total_seconds() / 3600 + 1
-    duration_diff = abs(df['Duration_hours'] - calculated_duration)
-    print(f"Records with duration mismatch: {(duration_diff > 0.1).sum()}")
-
-    # 检查降雨量与持续时间的关系
-    invalid_rain = df[df['Total_Rain_mm'] < df['Rainy_Hours'] * 0.1]
-    print(f"Records with potential rain measurement issues: {len(invalid_rain)}")
-
-    # 9. 生成可视化报告
-    print("\nGenerating visualizations...")
-    plt.figure(figsize=(15, 10))
-
-    # 降雨强度类别分布
-    plt.subplot(2, 2, 1)
-    sns.countplot(y='Intensity_Class', data=df, order=df['Intensity_Class'].value_counts().index, palette=palette)
-    plt.title('Rain Intensity Class Distribution')
-    plt.xlabel('Count')
-
-    # 数值变量分布（修正 log_scale 参数）
-    plt.subplot(2, 2, 2)
-    ax = sns.histplot(df['Total_Rain_mm'], bins=50, kde=True)
-    ax.set_xscale('log')
-    plt.title('Total Rainfall Distribution (log scale)')
-    plt.xlabel('Total Rainfall (mm)')
-
-    # 时间序列趋势
-    plt.subplot(2, 2, 3)
-    monthly_events.plot(kind='line', marker='o')
-    plt.title('Monthly Rain Events Count')
-    plt.xlabel('Month')
-    plt.ylabel('Number of Events')
-    plt.grid(True)
-
-    # 降雨量与持续时间关系
-    plt.subplot(2, 2, 4)
-    sns.scatterplot(data=df.sample(min(1000, len(df))),
-                    x='Duration_hours',
-                    y='Total_Rain_mm',
-                    hue='Intensity_Class',
-                    palette=palette,
-                    alpha=0.6)
-    plt.title('Rainfall vs Duration')
-    plt.xlabel('Duration (hours)')
-    plt.ylabel('Total Rainfall (mm)')
-    plt.xscale('log')
-    plt.yscale('log')
-
-    plt.tight_layout()
-
-    # 保存报告
-    report_file = file_path.replace('.parquet', '_report.png')
-    plt.savefig(report_file, dpi=150)
-    print(f"Visual report saved to: {report_file}")
-
-    # 10. 保存分析摘要
-    summary_file = file_path.replace('.parquet', '_summary.txt')
-    with open(summary_file, 'w') as f:
-        f.write(f"Rain Events Dataset Analysis Report\n")
-        f.write(f"Generated on: {datetime.now()}\n\n")
-        f.write(f"Dataset: {file_path}\n")
-        f.write(f"Total records: {len(df):,}\n")
-        f.write(f"Total stations: {df['Station'].nunique():,}\n")
-        f.write(f"Time range: {df['Start_Time'].min()} to {df['End_Time'].max()}\n\n")
-        f.write("Rain Intensity Class Distribution:\n")
-        f.write(class_dist.to_string())
-        f.write("\n\nTop 3 Stations by Event Count:\n")
-        f.write(df['Station'].value_counts().head(3).to_string())
-
-    print(f"Summary report saved to: {summary_file}")
-    print("\nAnalysis completed!")
+                if stats is not None:
+                    print(f"    最小值: {stats.min}")
+                    print(f"    最大值: {stats.max}")
+                    print(f"    空值数量: {stats.null_count}")
+                    if stats.has_distinct_count:
+                        print(f"    不同值数量: {stats.distinct_count}")
+                else:
+                    print("    无统计信息")
+    except Exception as e:
+        print(f"读取文件时出错: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
-    analyze_rain_events(INPUT_FILE)
+    # 指定要查看的文件路径
+    file_path = r"D:/H8_data/Correction_Records/Correction_Records_20150707_0200.parquet"
+
+    # 打印文件详细信息
+    print_parquet_file_details(file_path)
+
+    # 添加等待输入，防止窗口立即关闭
+    input("\n按Enter键退出...")

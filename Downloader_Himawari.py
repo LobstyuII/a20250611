@@ -268,7 +268,7 @@ def get_l2_ftp_path(date, hour, minute):
     satellite_prefix = get_satellite_prefix(date)
 
     # 2022年10月1日之后使用031路径
-    version = "031" if date >= datetime.date(2022, 10, 1) else "030"
+    version = "031" if date >= datetime.date(2022, 12, 13) else "030"
 
     return (f"/pub/himawari/L2/ARP/{version}/{date.year:04d}{date.month:02d}/"
             f"{date.day:02d}/{hour:02d}/"

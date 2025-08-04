@@ -6,8 +6,8 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # 配置参数
-DATE = '20170209'  # 格式: YYYYMMDD
-STATION_NAME = '2651A'
+DATE = '20150709'  # 格式: YYYYMMDD
+STATION_NAME = '2652A'
 SOZSR_DIR = 'D:/H8_data/Hourly_sozSR_Angles'  # sozSR反射率数据目录
 H8SR_DIR = 'D:/H8_data/H8SR'  # H8SR反射率数据目录
 MODIS_DIR = 'D:/H8_Data/MODIS_NDVI'  # MODIS数据目录
@@ -125,7 +125,7 @@ def read_h8sr_data(date, station_name):
     for date_str, hours in ranges:
         for hh in hours:
             hour_str = str(hh).zfill(2)
-            file_path = os.path.join(H8SR_DIR, f'SR_{date_str}_{hour_str}00.nc')
+            file_path = os.path.join(H8SR_DIR, f'6SSR_{date_str}_{hour_str}00.nc')
             if not os.path.exists(file_path):
                 continue
             try:
