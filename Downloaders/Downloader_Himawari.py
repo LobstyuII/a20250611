@@ -25,7 +25,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # 文件日志处理器
-file_handler = logging.FileHandler('h8_downloader.log')
+file_handler = logging.FileHandler('../h8_downloader.log')
 file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(file_formatter)
 logger.addHandler(file_handler)
@@ -53,7 +53,7 @@ DATE_RANGE = None
 
 def load_ftp_configs():
     """从JSON文件加载所有FTP配置"""
-    config_file = "ftp_configs.json"
+    config_file = "../ftp_configs.json"
     try:
         with open(config_file, 'r') as f:
             return json.load(f)

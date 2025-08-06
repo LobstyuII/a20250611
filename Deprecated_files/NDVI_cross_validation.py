@@ -21,26 +21,22 @@ warnings.filterwarnings("ignore", category=UserWarning, message="Warning: conver
 
 # ======================== 配置参数 ========================
 START_DATE = '20150707'
-END_DATE = '20150907'
+END_DATE = '20180707'
 POI_NC_FILE = 'D:/H8_data/LUTs.nc'
 SOZSR_DIR = 'D:/H8_data/Hourly_sozSR_Angles'
 H8SR_DIR = 'D:/H8_data/H8SR'
-# 修改：定义两种MODIS数据目录
-MOD09GA_DIR = 'D:/H8_Data/MODIS_NDVI'   # 原来的目录，存放MOD09GA计算的NDVI
-MOD13A1_DIR = 'D:/H8_Data/MODIS_NDVI_MOD13A1'  # 新增：存放MOD13A1 NDVI数据的目录
+MOD09GA_DIR = 'D:/H8_Data/MODIS_NDVI'  # MOD/MYD09GA数据目录
+MOD13A1_DIR = 'D:/H8_Data/MODIS_NDVI_MOD13A1'  # MOD13A1数据目录
+MOD43A4_DIR = 'D:/H8_Data/MODIS_NDVI_nadir'  # MOD43A4数据目录
 DEPRECATED_STATIONS_FILE = 'D:/H8_data/Station_deprecated.nc'
 
-NDVI_SOURCE = 'MOD13A1'
-
-# 修改输出目录，加入NDVI_SOURCE标识
-STATION_TS_DIR = f'D:/H8_Data/NDVI_cross_validation/Station_TimeSeries_{NDVI_SOURCE}_{START_DATE}_{END_DATE}'  # 带日期范围的目录
-OUTPUT_DIR = f'D:/H8_Data/NDVI_cross_validation/output_plots_{NDVI_SOURCE}_{START_DATE}_{END_DATE}'
+# 修改输出目录
+STATION_TS_DIR = f'D:/H8_Data/NDVI_cross_validation/Station_TimeSeries_{START_DATE}_{END_DATE}'  # 带日期范围的目录
+OUTPUT_DIR = f'D:/H8_Data/NDVI_cross_validation/output_plots_{START_DATE}_{END_DATE}'
 
 # 创建输出目录
 os.makedirs(STATION_TS_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-MODIS_DIR = MOD09GA_DIR if NDVI_SOURCE == 'MOD09GA' else MOD13A1_DIR
 
 # 并行处理参数
 MAX_WORKERS = max(1, mp.cpu_count() - 2)
@@ -79,86 +75,83 @@ def parse_date_range(start_date, end_date):
 
 
 # ======================== 阶段1: 重组站点时间序列 ========================
-def extract_modis_data_for_station(date_obj, station_name):
-    """为单个站点提取单日MODIS数据，根据NDVI_SOURCE选择数据源"""
+def extract_modis_data_for_station(date_obj, station_name, data_source):
+    """为单个站点提取单日MODIS数据"""
     date_str = date_obj.strftime('%Y%m%d')
     year = date_str[:4]
     month = date_str[4:6]
 
-    if NDVI_SOURCE == 'MOD09GA':
-        # 原来的处理MOD09GA的代码
-        file_path = os.path.join(MODIS_DIR, year, month, f'MODIS_NDVI_{date_str}.nc')
+    if data_source == 'MOD09GA':
+        file_path = os.path.join(MOD09GA_DIR, year, month, f'MODIS_NDVI_{date_str}.nc')
+    elif data_source == 'MOD13A1':  # 修改为elif
+        file_path = os.path.join(MOD13A1_DIR, year, month, f'MOD13A1_NDVI_{date_str}.nc')
+    elif data_source == 'MOD43A4':  # 添加MOD43A4分支
+        file_path = os.path.join(MOD43A4_DIR, year, month, f'MODIS_NDVI_nadir_{date_str}.nc')
+    else:
+        raise ValueError(f"未知数据源: {data_source}")
 
-        if not os.path.exists(file_path):
-            return np.nan, np.nan
+    if not os.path.exists(file_path):
+        return np.nan
 
-        try:
-            with nc.Dataset(file_path) as ds:
-                stations = ds.variables['Station'][:]
-                station_names = [''.join(s).strip() for s in stations]
+    try:
+        with nc.Dataset(file_path) as ds:
+            stations = ds.variables['Station'][:]
+            station_names = [''.join(s).strip() for s in stations]
 
-                if station_name not in station_names:
-                    return np.nan, np.nan
+            if station_name not in station_names:
+                return np.nan
 
-                idx = station_names.index(station_name)
+            idx = station_names.index(station_name)
+
+            if data_source == 'MOD09GA':
                 terra_ndvi = ds.variables['NDVI_Terra'][idx]
                 aqua_ndvi = ds.variables['NDVI_Aqua'][idx]
 
-                # 处理缺失值
-                terra_ndvi = np.nan if terra_ndvi in [-9999.0, None] else float(terra_ndvi)
-                aqua_ndvi = np.nan if aqua_ndvi in [-9999.0, None] else float(aqua_ndvi)
-
-                return terra_ndvi, aqua_ndvi
-        except Exception as e:
-            print(f"读取MODIS数据时出错: {e}")
-            return np.nan, np.nan
-
-    elif NDVI_SOURCE == 'MOD13A1':
-        # 新增：处理MOD13A1数据
-        file_path = os.path.join(MODIS_DIR, year, month, f'MOD13A1_NDVI_{date_str}.nc')
-
-        if not os.path.exists(file_path):
-            return np.nan, np.nan
-
-        try:
-            with nc.Dataset(file_path) as ds:
-                stations = ds.variables['Station'][:]
-                station_names = [''.join(s).strip() for s in stations]
-
-                if station_name not in station_names:
-                    return np.nan, np.nan
-
-                idx = station_names.index(station_name)
-                ndvi = ds.variables['NDVI_MOD13A1'][idx]
-
-                # 处理缺失值
-                if ndvi in [-9999.0, None] or np.isnan(ndvi):
-                    ndvi_val = np.nan
+                # 处理缺失值并计算平均值
+                if terra_ndvi in [-9999.0, None] or np.isnan(terra_ndvi):
+                    terra_ndvi = np.nan
                 else:
-                    ndvi_val = float(ndvi)
+                    terra_ndvi = float(terra_ndvi)
 
-                # MOD13A1不区分Terra和Aqua，所以返回相同的值
-                return ndvi_val, ndvi_val
-        except Exception as e:
-            print(f"读取MODIS MOD13A1数据时出错: {e}")
-            return np.nan, np.nan
+                if aqua_ndvi in [-9999.0, None] or np.isnan(aqua_ndvi):
+                    aqua_ndvi = np.nan
+                else:
+                    aqua_ndvi = float(aqua_ndvi)
 
-    else:
-        print(f"未知的NDVI数据源: {NDVI_SOURCE}")
-        return np.nan, np.nan
+                # 如果两个值都存在，计算平均值；否则返回存在的值
+                if not np.isnan(terra_ndvi) and not np.isnan(aqua_ndvi):
+                    return (terra_ndvi + aqua_ndvi) / 2
+                elif not np.isnan(terra_ndvi):
+                    return terra_ndvi
+                elif not np.isnan(aqua_ndvi):
+                    return aqua_ndvi
+                else:
+                    return np.nan
+            elif data_source == 'MOD13A1':
+                ndvi = ds.variables['NDVI_MOD13A1'][idx]
+                if ndvi in [-9999.0, None] or np.isnan(ndvi):
+                    return np.nan
+                return float(ndvi)
+            else:  # MOD43A4
+                ndvi = ds.variables['NDVI_nadir'][idx]
+                if ndvi in [-9999.0, None] or np.isnan(ndvi):
+                    return np.nan
+                return float(ndvi)
+    except Exception as e:
+        print(f"读取{data_source}数据时出错: {e}")
+        return np.nan
 
 
 def extract_h8_data_for_station(date_obj, station_name, data_type):
-    """为单个站点提取单日Himawari-8数据"""
+    """为单个站点提取单日Himawari-8数据，返回全天平均值"""
     date_str = date_obj.strftime('%Y%m%d')
     prev_date = (date_obj - timedelta(days=1)).strftime('%Y%m%d')
 
     # 确定数据目录
     data_dir = SOZSR_DIR if data_type == 'soz' else H8SR_DIR
 
-    # 目标时间点（北京时间10:00和13:00）
-    target_times = [10, 13]
-    ndvi_values = {t: np.nan for t in target_times}
+    # 存储所有有效NDVI值
+    all_ndvi = []
 
     # 检查前一天21-23时和当天0-18时
     time_ranges = [
@@ -208,7 +201,6 @@ def extract_h8_data_for_station(date_obj, station_name, data_type):
                     # 计算NDVI
                     b3 = ds.variables['Albedo_03'][idx]
                     b4 = ds.variables['Albedo_04'][idx]
-                    denom = b4 + b3
 
                     # 检查是否为NaN值
                     if np.isnan(b3) or np.isnan(b4):
@@ -226,25 +218,16 @@ def extract_h8_data_for_station(date_obj, station_name, data_type):
                     if np.isnan(ndvi) or ndvi < -1 or ndvi > 1:
                         continue
 
-                    # 转换为北京时间 (UTC+8)
-                    utc_time = datetime.strptime(f"{date_prefix}{hour_str}", '%Y%m%d%H')
-                    bj_time = utc_time + timedelta(hours=8)
-
-                    # 仅保留目标时间点附近数据（±30分钟）
-                    for target in target_times:
-                        target_dt = datetime(bj_time.year, bj_time.month, bj_time.day, target)
-                        time_diff = abs((bj_time - target_dt).total_seconds() / 3600)
-
-                        if time_diff <= 0.5:  # 30分钟内
-                            # 如果已有数据，保留时间更接近的数据
-                            if np.isnan(ndvi_values[target]) or time_diff < abs(
-                                    (bj_time - target_dt).total_seconds() / 3600):
-                                ndvi_values[target] = ndvi
+                    all_ndvi.append(ndvi)
             except Exception as e:
-                print(f"处理文件 {os.path.basename(file_path)} 时出错: {str(e)}")
+                # print(f"处理文件 {os.path.basename(file_path)} 时出错: {str(e)}")
                 continue
 
-    return ndvi_values[10], ndvi_values[13]
+    # 计算全天平均值
+    if all_ndvi:
+        return np.mean(all_ndvi)
+    else:
+        return np.nan
 
 
 def station_needs_processing(station_file):
@@ -278,47 +261,38 @@ def process_single_station(station_name, date_objs):
 
     # 检查是否需要处理
     if not station_needs_processing(station_file):
-        print(f"站点 {station_name} 已存在且数据完整，跳过处理")
+        # print(f"站点 {station_name} 已存在且数据完整，跳过处理")
         return station_name
-
-    # print(f"开始处理站点: {station_name}")
 
     # 准备数据结构
     times = []
-    terra_ndvi = []
-    aqua_ndvi = []
-    soz_10 = []
-    soz_13 = []
-    h8sr_10 = []
-    h8sr_13 = []
+    mod09ga_ndvi = []
+    mod13a1_ndvi = []
+    mod43a4_ndvi = []
+    soz_avg = []
+    h8sr_avg = []
 
     # 处理每一天
     for date_obj in date_objs:
-        # 提取MODIS数据
-        t_ndvi, a_ndvi = extract_modis_data_for_station(date_obj, station_name)
+        # 提取两种MODIS数据
+        mod09ga_ndvi.append(extract_modis_data_for_station(date_obj, station_name, 'MOD09GA'))
+        mod13a1_ndvi.append(extract_modis_data_for_station(date_obj, station_name, 'MOD13A1'))
+        mod43a4_ndvi.append(extract_modis_data_for_station(date_obj, station_name, 'MOD43A4'))
 
         # 提取H8数据
-        s10, s13 = extract_h8_data_for_station(date_obj, station_name, 'soz')
-        h10, h13 = extract_h8_data_for_station(date_obj, station_name, '6s')
+        soz_avg.append(extract_h8_data_for_station(date_obj, station_name, 'soz'))
+        h8sr_avg.append(extract_h8_data_for_station(date_obj, station_name, '6s'))
 
-        # 保存数据
         times.append(date_obj)
-        terra_ndvi.append(t_ndvi)
-        aqua_ndvi.append(a_ndvi)
-        soz_10.append(s10)
-        soz_13.append(s13)
-        h8sr_10.append(h10)
-        h8sr_13.append(h13)
 
     # 创建数据集
     ds = xr.Dataset(
         {
-            "NDVI_Terra": (("time",), np.array(terra_ndvi, dtype=np.float32)),
-            "NDVI_Aqua": (("time",), np.array(aqua_ndvi, dtype=np.float32)),
-            "NDVI_soz_10": (("time",), np.array(soz_10, dtype=np.float32)),
-            "NDVI_soz_13": (("time",), np.array(soz_13, dtype=np.float32)),
-            "NDVI_6s_10": (("time",), np.array(h8sr_10, dtype=np.float32)),
-            "NDVI_6s_13": (("time",), np.array(h8sr_13, dtype=np.float32))
+            "NDVI_MOD09GA": (("time",), np.array(mod09ga_ndvi, dtype=np.float32)),
+            "NDVI_MOD13A1": (("time",), np.array(mod13a1_ndvi, dtype=np.float32)),
+            "NDVI_MOD43A4": (("time",), np.array(mod43a4_ndvi, dtype=np.float32)),
+            "NDVI_soz": (("time",), np.array(soz_avg, dtype=np.float32)),
+            "NDVI_6s": (("time",), np.array(h8sr_avg, dtype=np.float32))
         },
         coords={"time": np.array(times)}
     )
@@ -333,7 +307,6 @@ def process_single_station(station_name, date_objs):
 
     # 保存为NetCDF
     ds.to_netcdf(station_file)
-    # print(f"站点 {station_name} 处理完成")
     return station_name
 
 
@@ -386,6 +359,7 @@ def run_stage1():
 
     print(f"阶段1完成! 已处理 {len(completed_stations)} 个站点")
 
+
 # ======================== 阶段2: 交叉验证分析 ========================
 def load_station_data(station_name):
     """加载单个站点的重组数据"""
@@ -403,28 +377,18 @@ def load_station_data(station_name):
         return pd.DataFrame()
 
 
-def safe_r2_score(y_true, y_pred):
-    """安全的R²计算函数，处理小样本情况"""
-    if len(y_true) < 2:
-        return np.nan
-
-    try:
-        return r2_score(y_true, y_pred)
-    except Exception:
-        return np.nan
-
-
-def plot_density_scatter(x, y, xlabel, ylabel):
-    """绘制带密度和统计信息的散点图"""
+def plot_density_scatter(ax, x, y, xlabel, ylabel, title, color):
+    """绘制带密度和统计信息的散点图到指定axes"""
     # 移除NaN值
     valid_idx = ~np.isnan(x) & ~np.isnan(y)
-    x_vals = x[valid_idx].values  # 转换为numpy数组
-    y_vals = y[valid_idx].values  # 转换为numpy数组
+    x_vals = x[valid_idx].values
+    y_vals = y[valid_idx].values
 
     if len(x_vals) < 2:
-        plt.text(0.5, 0.5, "数据不足", ha='center', va='center')
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
+        ax.text(0.5, 0.5, "数据不足", ha='center', va='center')
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
         return
 
     # 计算密度
@@ -436,180 +400,187 @@ def plot_density_scatter(x, y, xlabel, ylabel):
     x_vals, y_vals, z = x_vals[idx], y_vals[idx], z[idx]
 
     # 创建散点图
-    plt.scatter(x_vals, y_vals, c=z, s=10, alpha=0.5, cmap='viridis')
+    scatter = ax.scatter(x_vals, y_vals, c=z, s=10, alpha=0.5, cmap='viridis')
 
     # 添加1:1线
     max_val = max(np.nanmax(x_vals), np.nanmax(y_vals))
     min_val = min(np.nanmin(x_vals), np.nanmin(y_vals))
-    plt.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.7)
+    ax.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.7, label='1:1 Line')
+
+    # 计算皮尔逊相关系数
+    pearson_r = np.corrcoef(x_vals, y_vals)[0, 1]
+    r2 = pearson_r ** 2
+
+    # 计算线性回归拟合线
+    slope, intercept = np.polyfit(x_vals, y_vals, 1)
+    fit_x = np.array([min_val, max_val])
+    fit_y = slope * fit_x + intercept
+    ax.plot(fit_x, fit_y, 'b-', alpha=0.7, label='Regression Line')
 
     # 添加统计信息
-    r2 = r2_score(x_vals, y_vals)
     rmse = np.sqrt(mean_squared_error(x_vals, y_vals))
     bias = np.mean(y_vals - x_vals)
 
-    plt.text(0.05, 0.95, f'R² = {r2:.3f}\nRMSE = {rmse:.3f}\nBias = {bias:.3f}\nn = {len(x_vals)}',
-             transform=plt.gca().transAxes, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    ax.text(0.05, 0.95, f'R² = {r2:.3f}\nRMSE = {rmse:.3f}\nBias = {bias:.3f}\nn = {len(x_vals)}',
+            transform=ax.transAxes, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.grid(True, alpha=0.3)
-    plt.colorbar(label='Dot density')
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='lower right')
+    return scatter
+
+
+# 在 generate_comparison_plots 函数中更新 calculate_metrics 函数
+def calculate_metrics(true, pred):
+    valid_idx = ~np.isnan(true) & ~np.isnan(pred)
+    true = true[valid_idx]
+    pred = pred[valid_idx]
+
+    if len(true) < 2:
+        return {
+            'r2': np.nan,
+            'rmse': np.nan,
+            'bias': np.nan,
+            'slope': np.nan,
+            'count': len(true)
+        }
+
+    # 计算皮尔逊相关系数的平方
+    pearson_r = np.corrcoef(true, pred)[0, 1]
+    r2 = pearson_r ** 2
+
+    return {
+        'r2': r2,
+        'rmse': np.sqrt(mean_squared_error(true, pred)),
+        'bias': np.mean(pred - true),
+        'slope': np.polyfit(true, pred, 1)[0],
+        'count': len(true)
+    }
 
 
 def generate_comparison_plots(full_df):
     """生成交叉验证图表"""
-    # 创建副本避免SettingWithCopyWarning
     df = full_df.copy()
 
+    # 检查列是否存在
+    required_columns = ['NDVI_MOD09GA', 'NDVI_MOD13A1', 'NDVI_6s', 'NDVI_soz']
+    available_columns = [col for col in required_columns if col in df.columns]
+
+    if not available_columns:
+        print("没有找到必要的NDVI列，无法生成图表")
+        return
+
     # 过滤有效数据点
-    df = df.dropna(subset=['NDVI_modis', 'NDVI_6s', 'NDVI_soz'], how='all')
+    df = df.dropna(subset=available_columns, how='all')
 
     if df.empty:
         print("没有足够数据生成图表")
         return
 
-    # 1. 整体散点密度图
-    plt.figure(figsize=(16, 8))
+    # 1. 整体散点密度图 - 在同一图上显示两种MODIS数据
+    fig, axes = plt.subplots(3, 2, figsize=(16, 21))
 
-    plt.subplot(121)
-    plot_density_scatter(df['NDVI_modis'], df['NDVI_6s'], 'MODIS NDVI', 'Himawari-8 NDVI (6S+BRDF)')
-    plt.title('NDVI_6s vs NDVI_modis', fontsize=14)
+    # 第一排: MOD09GA比较
+    if 'NDVI_MOD09GA' in df.columns and 'NDVI_6s' in df.columns:
+        plot_density_scatter(axes[0, 0], df['NDVI_MOD09GA'], df['NDVI_6s'],
+                             'MODIS MOD09GA NDVI', 'Himawari-8 NDVI (6S+BRDF)',
+                             'MOD09GA vs 6S+BRDF', 'blue')
 
-    plt.subplot(122)
-    plot_density_scatter(df['NDVI_modis'], df['NDVI_soz'], 'MODIS NDVI', 'Himawari-8 NDVI (Solar Angle adjusted)')
-    plt.title('NDVI_soz vs NDVI_modis', fontsize=14)
+    if 'NDVI_MOD09GA' in df.columns and 'NDVI_soz' in df.columns:
+        plot_density_scatter(axes[0, 1], df['NDVI_MOD09GA'], df['NDVI_soz'],
+                             'MODIS MOD09GA NDVI', 'Himawari-8 NDVI (Solar Angle adjusted)',
+                             'MOD09GA vs Solar Angle', 'green')
+
+    # 第二排: MOD13A1比较
+    if 'NDVI_MOD13A1' in df.columns and 'NDVI_6s' in df.columns:
+        plot_density_scatter(axes[1, 0], df['NDVI_MOD13A1'], df['NDVI_6s'],
+                             'MODIS MOD13A1 NDVI', 'Himawari-8 NDVI (6S+BRDF)',
+                             'MOD13A1 vs 6S+BRDF', 'blue')
+
+    if 'NDVI_MOD13A1' in df.columns and 'NDVI_soz' in df.columns:
+        plot_density_scatter(axes[1, 1], df['NDVI_MOD13A1'], df['NDVI_soz'],
+                             'MODIS MOD13A1 NDVI', 'Himawari-8 NDVI (Solar Angle adjusted)',
+                             'MOD13A1 vs Solar Angle', 'green')
+
+    # 第三排: MOD43A4比较 (新增)
+    if 'NDVI_MOD43A4' in df.columns and 'NDVI_6s' in df.columns:
+        plot_density_scatter(axes[2, 0], df['NDVI_MOD43A4'], df['NDVI_6s'],
+                             'MODIS MOD43A4 NDVI (Nadir)', 'Himawari-8 NDVI (6S+BRDF)',
+                             'MOD43A4 Nadir vs 6S+BRDF', 'purple')
+
+    if 'NDVI_MOD43A4' in df.columns and 'NDVI_soz' in df.columns:
+        plot_density_scatter(axes[2, 1], df['NDVI_MOD43A4'], df['NDVI_soz'],
+                             'MODIS MOD43A4 NDVI (Nadir)', 'Himawari-8 NDVI (Solar Angle adjusted)',
+                             'MOD43A4 Nadir vs Solar Angle', 'orange')
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, 'NDVI_CrossValidation_ScatterDensity.png'), dpi=300)
     plt.close()
 
     # 2. 误差分布图
-    df['error_6s'] = df['NDVI_6s'] - df['NDVI_modis']
-    df['error_soz'] = df['NDVI_soz'] - df['NDVI_modis']
+    plt.figure(figsize=(14, 15))
 
-    plt.figure(figsize=(12, 8))
-    sns.kdeplot(data=df, x='error_6s', label='6S+BRDF', fill=True, alpha=0.5)
-    sns.kdeplot(data=df, x='error_soz', label='Solar Angle', fill=True, alpha=0.5)
+    plt.subplot(3, 1, 1)
+    if 'NDVI_MOD09GA' in df.columns and 'NDVI_6s' in df.columns:
+        df['error_6s_mod09'] = df['NDVI_6s'] - df['NDVI_MOD09GA']
+        sns.kdeplot(data=df, x='error_6s_mod09', label='6S+BRDF vs MOD09GA', fill=True, alpha=0.5)
+
+    if 'NDVI_MOD09GA' in df.columns and 'NDVI_soz' in df.columns:
+        df['error_soz_mod09'] = df['NDVI_soz'] - df['NDVI_MOD09GA']
+        sns.kdeplot(data=df, x='error_soz_mod09', label='Solar Angle vs MOD09GA', fill=True, alpha=0.5)
+
     plt.axvline(x=0, color='gray', linestyle='--')
     plt.xlabel('NDVI Difference (Himawari-8 - MODIS)')
     plt.ylabel('Density')
-    plt.title('Comparison of error distribution')
+    plt.title('Error distribution: MOD09GA')
     plt.legend()
     plt.grid(True, alpha=0.3)
+
+    plt.subplot(3, 1, 2)
+    if 'NDVI_MOD13A1' in df.columns and 'NDVI_6s' in df.columns:
+        df['error_6s_mod13'] = df['NDVI_6s'] - df['NDVI_MOD13A1']
+        sns.kdeplot(data=df, x='error_6s_mod13', label='6S+BRDF vs MOD13A1', fill=True, alpha=0.5)
+
+    if 'NDVI_MOD13A1' in df.columns and 'NDVI_soz' in df.columns:
+        df['error_soz_mod13'] = df['NDVI_soz'] - df['NDVI_MOD13A1']
+        sns.kdeplot(data=df, x='error_soz_mod13', label='Solar Angle vs MOD13A1', fill=True, alpha=0.5)
+
+    plt.axvline(x=0, color='gray', linestyle='--')
+    plt.xlabel('NDVI Difference (Himawari-8 - MODIS)')
+    plt.ylabel('Density')
+    plt.title('Error distribution: MOD13A1')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, 'NDVI_Error_Distribution.png'), dpi=300)
     plt.close()
 
-    # 3. 时间序列分析（按年）
-    df['date'] = pd.to_datetime(df['date'])
-    df['year'] = df['date'].dt.year
-    yearly_metrics = df.groupby('year').agg({
-        'error_6s': ['mean', 'std'],
-        'error_soz': ['mean', 'std']
-    }).reset_index()
+    plt.subplot(3, 1, 3)  # 新增第3个子图
+    if 'NDVI_MOD43A4' in df.columns and 'NDVI_6s' in df.columns:
+        df['error_6s_mod43'] = df['NDVI_6s'] - df['NDVI_MOD43A4']
+        sns.kdeplot(data=df, x='error_6s_mod43', label='6S+BRDF vs MOD43A4 Nadir', fill=True, alpha=0.5, color='purple')
 
-    if not yearly_metrics.empty:
-        plt.figure(figsize=(12, 8))
-        plt.errorbar(yearly_metrics['year'], yearly_metrics[('error_6s', 'mean')],
-                     yerr=yearly_metrics[('error_6s', 'std')],
-                     label='6S+BRDF', fmt='-o', capsize=5)
-        plt.errorbar(yearly_metrics['year'], yearly_metrics[('error_soz', 'mean')],
-                     yerr=yearly_metrics[('error_soz', 'std')],
-                     label='Solar Angle', fmt='-s', capsize=5)
-        plt.axhline(y=0, color='gray', linestyle='--')
-        plt.xlabel('year')
-        plt.ylabel('Mean Error (Himawari-8 - MODIS)')
-        plt.title('annual NDVI compared of MODIS')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(OUTPUT_DIR, 'NDVI_Annual_Comparison.png'), dpi=300)
-        plt.close()
+    if 'NDVI_MOD43A4' in df.columns and 'NDVI_soz' in df.columns:
+        df['error_soz_mod43'] = df['NDVI_soz'] - df['NDVI_MOD43A4']
+        sns.kdeplot(data=df, x='error_soz_mod43', label='Solar Angle vs MOD43A4 Nadir', fill=True, alpha=0.5,
+                    color='orange')
 
-    # 4. 按时间段分析（上午 vs 下午）
-    time_metrics = df.groupby('time_point').agg({
-        'error_6s': ['mean', 'std'],
-        'error_soz': ['mean', 'std']
-    }).reset_index()
+    plt.axvline(x=0, color='gray', linestyle='--')
+    plt.xlabel('NDVI Difference (Himawari-8 - MODIS)')
+    plt.ylabel('Density')
+    plt.title('Error distribution: MOD43A4 Nadir')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
 
-    if not time_metrics.empty:
-        plt.figure(figsize=(10, 6))
-        x = np.arange(len(time_metrics))
-        width = 0.35
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'NDVI_Error_Distribution.png'), dpi=300)
+    plt.close()
 
-        plt.bar(x - width / 2, time_metrics[('error_6s', 'mean')], width,
-                yerr=time_metrics[('error_6s', 'std')], label='6S+BRDF', capsize=5)
-        plt.bar(x + width / 2, time_metrics[('error_soz', 'mean')], width,
-                yerr=time_metrics[('error_soz', 'std')], label='Solar Angle', capsize=5)
-
-        plt.axhline(y=0, color='gray', linestyle='--')
-        plt.xlabel('Time')
-        plt.ylabel('Mean error (Himawari-8 - MODIS)')
-        plt.title('NDVI time series comparison')
-        plt.xticks(x, time_metrics['time_point'])
-        plt.legend()
-        plt.grid(axis='y', alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(OUTPUT_DIR, 'NDVI_TimeOfDay_Comparison.png'), dpi=300)
-        plt.close()
-
-    # 5. 季节分析 - 鲁棒版本
-    df['month'] = df['date'].dt.month
-
-    # 定义季节映射
-    season_map = {
-        12: 'Winter', 1: 'Winter', 2: 'Winter',
-        3: 'Spring', 4: 'Spring', 5: 'Spring',
-        6: 'Summer', 7: 'Summer', 8: 'Summer',
-        9: 'Autumn', 10: 'Autumn', 11: 'Autumn'
-    }
-
-    # 安全应用季节映射
-    df['season'] = df['month'].map(season_map)
-
-    # 分组统计
-    seasonal_metrics = df.groupby('season').agg({
-        'error_6s': ['mean', 'std'],
-        'error_soz': ['mean', 'std']
-    }).reset_index()
-
-    # 定义季节顺序
-    season_order = ['Spring', 'Summer', 'Autumn', 'Winter']
-
-    # 按季节顺序排序
-    seasonal_metrics['season'] = pd.Categorical(
-        seasonal_metrics['season'],
-        categories=season_order,
-        ordered=True
-    )
-    seasonal_metrics = seasonal_metrics.sort_values('season')
-
-    if not seasonal_metrics.empty:
-        plt.figure(figsize=(12, 8))
-        x = np.arange(len(seasonal_metrics))
-        width = 0.35
-
-        # 提取平均值和标准差
-        mean_6s = seasonal_metrics[('error_6s', 'mean')].values
-        std_6s = seasonal_metrics[('error_6s', 'std')].values
-        mean_soz = seasonal_metrics[('error_soz', 'mean')].values
-        std_soz = seasonal_metrics[('error_soz', 'std')].values
-
-        plt.bar(x - width / 2, mean_6s, width, yerr=std_6s, label='6S+BRDF', capsize=5)
-        plt.bar(x + width / 2, mean_soz, width, yerr=std_soz, label='Solar Angle', capsize=5)
-
-        plt.axhline(y=0, color='gray', linestyle='--')
-        plt.xlabel('Season')
-        plt.ylabel('Mean error (Himawari-8 - MODIS)')
-        plt.title('NDVI time series comparison')
-        plt.xticks(x, seasonal_metrics['season'])
-        plt.legend()
-        plt.grid(axis='y', alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(OUTPUT_DIR, 'NDVI_Seasonal_Comparison.png'), dpi=300)
-        plt.close()
-
-    # 6. 统计指标表
+    # 3. 统计指标表
     # 安全的指标计算
     def calculate_metrics(true, pred):
         valid_idx = ~np.isnan(true) & ~np.isnan(pred)
@@ -633,27 +604,83 @@ def generate_comparison_plots(full_df):
             'count': len(true)
         }
 
-    metrics_6s = calculate_metrics(df['NDVI_modis'], df['NDVI_6s'])
-    metrics_soz = calculate_metrics(df['NDVI_modis'], df['NDVI_soz'])
+    # 初始化指标字典
+    metrics_data = []
 
-    stats_table = pd.DataFrame({
-        'Indicators': ['R²', 'RMSE', 'bias', 'slope', 'n'],
-        '6S+BRDF': [
-            metrics_6s['r2'],
-            metrics_6s['rmse'],
-            metrics_6s['bias'],
-            metrics_6s['slope'],
-            metrics_6s['count']
-        ],
-        'Solar Angle adjusted': [
-            metrics_soz['r2'],
-            metrics_soz['rmse'],
-            metrics_soz['bias'],
-            metrics_soz['slope'],
-            metrics_soz['count']
-        ]
-    })
+    # MOD09GA比较
+    if 'NDVI_MOD09GA' in df.columns and 'NDVI_6s' in df.columns:
+        metrics_mod09_6s = calculate_metrics(df['NDVI_MOD09GA'], df['NDVI_6s'])
+        metrics_data.append({
+            'Comparison': 'MOD09GA vs 6S+BRDF',
+            'R²': metrics_mod09_6s['r2'],
+            'RMSE': metrics_mod09_6s['rmse'],
+            'Bias': metrics_mod09_6s['bias'],
+            'Slope': metrics_mod09_6s['slope'],
+            'n': metrics_mod09_6s['count']
+        })
 
+    if 'NDVI_MOD09GA' in df.columns and 'NDVI_soz' in df.columns:
+        metrics_mod09_soz = calculate_metrics(df['NDVI_MOD09GA'], df['NDVI_soz'])
+        metrics_data.append({
+            'Comparison': 'MOD09GA vs Solar Angle',
+            'R²': metrics_mod09_soz['r2'],
+            'RMSE': metrics_mod09_soz['rmse'],
+            'Bias': metrics_mod09_soz['bias'],
+            'Slope': metrics_mod09_soz['slope'],
+            'n': metrics_mod09_soz['count']
+        })
+
+    # MOD13A1比较
+    if 'NDVI_MOD13A1' in df.columns and 'NDVI_6s' in df.columns:
+        metrics_mod13_6s = calculate_metrics(df['NDVI_MOD13A1'], df['NDVI_6s'])
+        metrics_data.append({
+            'Comparison': 'MOD13A1 vs 6S+BRDF',
+            'R²': metrics_mod13_6s['r2'],
+            'RMSE': metrics_mod13_6s['rmse'],
+            'Bias': metrics_mod13_6s['bias'],
+            'Slope': metrics_mod13_6s['slope'],
+            'n': metrics_mod13_6s['count']
+        })
+
+    if 'NDVI_MOD13A1' in df.columns and 'NDVI_soz' in df.columns:
+        metrics_mod13_soz = calculate_metrics(df['NDVI_MOD13A1'], df['NDVI_soz'])
+        metrics_data.append({
+            'Comparison': 'MOD13A1 vs Solar Angle',
+            'R²': metrics_mod13_soz['r2'],
+            'RMSE': metrics_mod13_soz['rmse'],
+            'Bias': metrics_mod13_soz['bias'],
+            'Slope': metrics_mod13_soz['slope'],
+            'n': metrics_mod13_soz['count']
+        })
+
+        # MOD43A4比较
+        if 'NDVI_MOD43A4' in df.columns and 'NDVI_6s' in df.columns:
+            metrics_mod43_6s = calculate_metrics(df['NDVI_MOD43A4'], df['NDVI_6s'])
+            metrics_data.append({
+                'Comparison': 'MOD43A4 Nadir vs 6S+BRDF',
+                'R²': metrics_mod43_6s['r2'],
+                'RMSE': metrics_mod43_6s['rmse'],
+                'Bias': metrics_mod43_6s['bias'],
+                'Slope': metrics_mod43_6s['slope'],
+                'n': metrics_mod43_6s['count']
+            })
+
+        if 'NDVI_MOD43A4' in df.columns and 'NDVI_soz' in df.columns:
+            metrics_mod43_soz = calculate_metrics(df['NDVI_MOD43A4'], df['NDVI_soz'])
+            metrics_data.append({
+                'Comparison': 'MOD43A4 Nadir vs Solar Angle',
+                'R²': metrics_mod43_soz['r2'],
+                'RMSE': metrics_mod43_soz['rmse'],
+                'Bias': metrics_mod43_soz['bias'],
+                'Slope': metrics_mod43_soz['slope'],
+                'n': metrics_mod43_soz['count']
+            })
+
+    if not metrics_data:
+        print("没有足够的指标数据生成统计表")
+        return
+
+    stats_table = pd.DataFrame(metrics_data)
     stats_table.to_csv(os.path.join(OUTPUT_DIR, 'NDVI_Validation_Metrics.csv'), index=False)
 
     fig, ax = plt.subplots(figsize=(12, 4))
@@ -676,7 +703,6 @@ def generate_comparison_plots(full_df):
 def run_stage2():
     """运行阶段2：交叉验证分析"""
     print("====== 开始阶段2：交叉验证分析 ======")
-    print(f"使用的NDVI数据源: {NDVI_SOURCE}")
 
     # 获取所有站点文件
     station_files = glob.glob(os.path.join(STATION_TS_DIR, "Station_*.nc"))
@@ -696,46 +722,8 @@ def run_stage2():
             # 从文件名获取站点名
             station_name = os.path.basename(file_path).split('_')[1].split('.')[0]
             df['station'] = station_name
+            all_data.append(df)
 
-            # 重组数据格式
-            # 对于MOD13A1，不区分上下午，使用同一个NDVI值
-            if NDVI_SOURCE == 'MOD13A1':
-                # MOD13A1处理 - 不区分时间点
-                df_all = df[['time', 'NDVI_Terra', 'NDVI_soz_10', 'NDVI_soz_13',
-                             'NDVI_6s_10', 'NDVI_6s_13', 'station']].copy()
-                df_all.columns = ['date', 'NDVI_modis', 'NDVI_soz_10', 'NDVI_soz_13',
-                                  'NDVI_6s_10', 'NDVI_6s_13', 'station']
-                # df_all['time'] = 'MOD13A1'  # 标记为统一时间
-
-                # 创建两个副本，分别对应10:00和13:00的H8数据
-                df_10 = df_all.copy()
-                df_10['NDVI_soz'] = df_10['NDVI_soz_10']
-                df_10['NDVI_6s'] = df_10['NDVI_6s_10']
-                df_10['time_point'] = '10:00'
-
-                df_13 = df_all.copy()
-                df_13['NDVI_soz'] = df_13['NDVI_soz_13']
-                df_13['NDVI_6s'] = df_13['NDVI_6s_13']
-                df_13['time_point'] = '13:00'
-
-                station_df = pd.concat([df_10[['date', 'NDVI_modis', 'NDVI_soz', 'NDVI_6s', 'station', 'time_point']],
-                                        df_13[['date', 'NDVI_modis', 'NDVI_soz', 'NDVI_6s', 'station', 'time_point']]])
-            else:
-                # 原来的处理方式（MOD09GA）
-                # 10:00 时间点 - 使用Terra数据
-                df_10 = df[['time', 'NDVI_Terra', 'NDVI_soz_10', 'NDVI_6s_10', 'station']].copy()
-                df_10.columns = ['date', 'NDVI_modis', 'NDVI_soz', 'NDVI_6s', 'station']
-                df_10['time_point'] = '10:00'
-
-                # 13:00 时间点 - 使用Aqua数据
-                df_13 = df[['time', 'NDVI_Aqua', 'NDVI_soz_13', 'NDVI_6s_13', 'station']].copy()
-                df_13.columns = ['date', 'NDVI_modis', 'NDVI_soz', 'NDVI_6s', 'station']
-                df_13['time_point'] = '13:00'
-
-                # 合并
-                station_df = pd.concat([df_10, df_13])
-
-            all_data.append(station_df)
         except Exception as e:
             print(f"加载文件 {file_path} 时出错: {str(e)}")
 
@@ -744,6 +732,7 @@ def run_stage2():
         return
 
     full_df = pd.concat(all_data, ignore_index=True)
+
 
     # 保存处理后的数据
     full_file = os.path.join(OUTPUT_DIR, 'NDVI_CrossValidation_Full_Data.csv')
@@ -755,48 +744,23 @@ def run_stage2():
     generate_comparison_plots(full_df)
     print("图表生成完成!")
 
-
 # ======================== 主函数 ========================
-def main_menu():
-    """显示主菜单并处理用户选择"""
-    global NDVI_SOURCE  # 声明为全局变量以便修改
+def main():
+    """主程序"""
+    parser = argparse.ArgumentParser(description='NDVI交叉验证分析')
+    parser.add_argument('--stage1', action='store_true', help='运行阶段1：重组站点时间序列数据')
+    parser.add_argument('--stage2', action='store_true', help='运行阶段2：交叉验证分析')
 
-    while True:
-        print("\n====== NDVI交叉验证分析 ======")
-        print(f"当前NDVI数据源: {NDVI_SOURCE}")
-        print("1: 重组站点时间序列")
-        print("2: 交叉验证分析")
-        print("3: 切换NDVI数据源 (当前: " + NDVI_SOURCE + ")")
-        print("q: 退出程序")
+    args = parser.parse_args()
 
-        choice = input("请选择操作 (1/2/3/q): ").strip().lower()
+    if args.stage1:
+        run_stage1()
+    if args.stage2:
+        run_stage2()
 
-        if choice == '1':
-            run_stage1()
-        elif choice == '2':
-            run_stage2()
-        elif choice == '3':
-            # 切换数据源
-            new_source = input("选择NDVI数据源 (输入 'MOD09GA' 或 'MOD13A1'): ").strip().upper()
-            if new_source in ['MOD09GA', 'MOD13A1']:
-                NDVI_SOURCE = new_source
-                # 更新目录路径
-                global STATION_TS_DIR, OUTPUT_DIR, MODIS_DIR
-                STATION_TS_DIR = f'D:/H8_Data/NDVI_cross_validation/Station_TimeSeries_{NDVI_SOURCE}_{START_DATE}_{END_DATE}'
-                OUTPUT_DIR = f'D:/H8_Data/NDVI_cross_validation/output_plots_{NDVI_SOURCE}_{START_DATE}_{END_DATE}'
-                MODIS_DIR = MOD09GA_DIR if NDVI_SOURCE == 'MOD09GA' else MOD13A1_DIR
-                # 创建新目录
-                os.makedirs(STATION_TS_DIR, exist_ok=True)
-                os.makedirs(OUTPUT_DIR, exist_ok=True)
-                print(f"已切换到 {NDVI_SOURCE} 数据源")
-            else:
-                print("无效的数据源选择，请输入 'MOD09GA' 或 'MOD13A1'")
-        elif choice == 'q':
-            print("程序已退出")
-            break
-        else:
-            print("无效选择，请重新输入")
+    if not args.stage1 and not args.stage2:
+        print("请指定要运行的阶段：--stage1 或 --stage2")
 
 
 if __name__ == "__main__":
-    main_menu()
+    main()

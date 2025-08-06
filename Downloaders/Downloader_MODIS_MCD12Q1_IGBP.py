@@ -21,7 +21,7 @@ logging.basicConfig(
 # GEE授权
 def GEE_authorizing():
     service_account = "lobstyu@premium-cipher-424203-d0.iam.gserviceaccount.com"
-    credentials_path = 'premium-cipher-424203-d0-c6894a29d00c.json'
+    credentials_path = '../premium-cipher-424203-d0-c6894a29d00c.json'
     try:
         credentials = ee.ServiceAccountCredentials(service_account, credentials_path)
         ee.Initialize(credentials)

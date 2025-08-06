@@ -62,7 +62,7 @@ def process_hourly_data(start_date, end_date):
         month = current_date.month
         day = current_date.day
 
-        for hour in [*range(0, 12), *range(21, 23)]:
+        for hour in [*range(0, 12), *range(21, 24)]:
             logger.info(f"处理 {current_date.strftime('%Y%m%d')} {hour:02d}:00")
 
             band_accum = {band: np.zeros(STATION_COUNT, dtype=np.float32) for band in BANDS}

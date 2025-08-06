@@ -111,7 +111,7 @@ if __name__ == "__main__":
     # file_path = r"D:\H8_data\USGS\Deciduous.nc"
     # file_path = r"D:/H8_data\LC_resampled_2015_2024.nc"
     # file_path = r"D:\H8_data\Himawari_BRDF_Albedo\2015\07\Himawari_adjusted_BRDF_Albedo_20150707.nc"
-    # file_path = r"D:\H8_data\MODIS_BRDF_Albedo\2015\07\MODIS_BRDF_Albedo_20150707.nc"
+    # file_path = r"D:\H8_data\NDVI_cross_validation\Station_TimeSeries_20150707_20150801\Station_1002A.nc"
 
 
     # 打印文件详细信息

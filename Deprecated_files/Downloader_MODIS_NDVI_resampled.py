@@ -11,6 +11,7 @@ import xarray as xr
 from tqdm import tqdm
 import concurrent.futures
 import traceback
+import shutil
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +22,7 @@ logging.basicConfig(
 
 def GEE_authorizing():
     service_account = "lobstyu@premium-cipher-424203-d0.iam.gserviceaccount.com"
-    credentials_path = 'premium-cipher-424203-d0-c6894a29d00c.json'
+    credentials_path = '../premium-cipher-424203-d0-c6894a29d00c.json'
     try:
         credentials = ee.ServiceAccountCredentials(service_account, credentials_path)
         ee.Initialize(credentials)
@@ -101,17 +102,17 @@ def get_feature_collection(stations, lats, lons):
         raise
 
 
-def save_daily_data(date, ndvi_nadir_data, stations, lats, lons, grid_info, base_path):
-    """保存单日数据到NC文件（只包含MCD43A4 NDVI数据）"""
+def save_daily_data(date, terra_data, aqua_data, stations, lats, lons, grid_info, base_path):
+    """保存单日数据到NC文件（新增网格索引）"""
     try:
         # 创建年月目录
         year = date.strftime("%Y")
         month = date.strftime("%m")
-        dir_path = os.path.join(base_path, "MODIS_NDVI_nadir", year, month)
+        dir_path = os.path.join(base_path, "MODIS_NDVI", year, month)
         os.makedirs(dir_path, exist_ok=True)
 
         # 文件路径
-        filename = f"MODIS_NDVI_nadir_{date.strftime('%Y%m%d')}.nc"
+        filename = f"MODIS_NDVI_{date.strftime('%Y%m%d')}.nc"
         file_path = os.path.join(dir_path, filename)
 
         # 如果文件已存在且完整，则跳过
@@ -128,7 +129,8 @@ def save_daily_data(date, ndvi_nadir_data, stations, lats, lons, grid_info, base
             station_var = ds.createVariable('Station', str, ('Station',))
             lat_var = ds.createVariable('Lat', 'f4', ('Station',))
             lon_var = ds.createVariable('Lon', 'f4', ('Station',))
-            ndvi_var = ds.createVariable('NDVI_nadir', 'f4', ('Station',), fill_value=-9999.0)
+            terra_var = ds.createVariable('NDVI_Terra', 'f4', ('Station',), fill_value=-9999.0)
+            aqua_var = ds.createVariable('NDVI_Aqua', 'f4', ('Station',), fill_value=-9999.0)
 
             # 新增网格索引变量
             gridx_var = ds.createVariable('grid_x', 'i4', ('Station',))
@@ -149,9 +151,10 @@ def save_daily_data(date, ndvi_nadir_data, stations, lats, lons, grid_info, base
             gridy_var[:] = gridy
 
             # 写入NDVI数据（一维数组）
-            ndvi_var[:] = ndvi_nadir_data
+            terra_var[:] = terra_data
+            aqua_var[:] = aqua_data
 
-        # logging.info(f"成功保存: {file_path}")
+        logging.info(f"成功保存: {file_path}")
         return True
 
     except Exception as e:
@@ -160,20 +163,8 @@ def save_daily_data(date, ndvi_nadir_data, stations, lats, lons, grid_info, base
         return False
 
 
-def calculate_ndvi(image):
-    """计算MCD43A4的NDVI"""
-    # 选择红波段(Band1)和近红外波段(Band2)
-    red = image.select('Nadir_Reflectance_Band1').multiply(0.0001)
-    nir = image.select('Nadir_Reflectance_Band2').multiply(0.0001)
-
-    # 计算NDVI = (NIR - Red) / (NIR + Red)
-    ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI_nadir')
-
-    return ndvi
-
-
-def process_daily_data(date, mcd43a4_col, grid_fc, stations, lats, lons, grid_info, base_path, max_retries=5):
-    """处理单日数据（使用MCD43A4计算NDVI）"""
+def process_daily_data(date, terra_col, aqua_col, grid_fc, stations, lats, lons, grid_info, base_path, max_retries=5):
+    """处理单日数据（使用区域统计替代点采样）"""
     retry_count = 0
     while retry_count < max_retries:
         try:
@@ -181,26 +172,22 @@ def process_daily_data(date, mcd43a4_col, grid_fc, stations, lats, lons, grid_in
             start_date = datetime.datetime(date.year, date.month, date.day, 0, 0, 0)
             end_date = start_date + datetime.timedelta(days=1)
 
-            # 获取MCD43A4数据（使用区域统计）
-            mcd43a4_img = mcd43a4_col.filterDate(start_date, end_date).first()
-            ndvi_nadir_data = [-9999.0] * len(stations)
+            # 获取Terra数据（使用区域统计）
+            terra_img = terra_col.filterDate(start_date, end_date).first()
+            terra_data = [-9999.0] * len(stations)
 
-            if mcd43a4_img:
-                # 计算NDVI
-                ndvi_img = calculate_ndvi(mcd43a4_img)
-
-                # 应用区域统计
-                ndvi_reduced = ndvi_img.reduceRegions(
+            if terra_img:
+                terra_reduced = terra_img.reduceRegions(
                     collection=grid_fc,
                     reducer=ee.Reducer.mean(),
                     scale=500  # MODIS原始分辨率
                 )
-                ndvi_info = ndvi_reduced.getInfo()
+                terra_info = terra_reduced.getInfo()
 
-                if 'features' in ndvi_info:
+                if 'features' in terra_info:
                     # 构建站点到NDVI的映射
                     temp_data = {}
-                    for f in ndvi_info['features']:
+                    for f in terra_info['features']:
                         props = f['properties']
                         station = props['Station']
                         ndvi = props.get('mean', -9999.0)
@@ -208,10 +195,34 @@ def process_daily_data(date, mcd43a4_col, grid_fc, stations, lats, lons, grid_in
                             ndvi = -9999.0
                         temp_data[station] = ndvi
 
-                    ndvi_nadir_data = [temp_data.get(station, -9999.0) for station in stations]
+                    terra_data = [temp_data.get(station, -9999.0) for station in stations]
 
-            # 保存数据
-            return save_daily_data(date, ndvi_nadir_data, stations, lats, lons, grid_info, base_path)
+            # 获取Aqua数据（同样使用区域统计）
+            aqua_img = aqua_col.filterDate(start_date, end_date).first()
+            aqua_data = [-9999.0] * len(stations)
+
+            if aqua_img:
+                aqua_reduced = aqua_img.reduceRegions(
+                    collection=grid_fc,
+                    reducer=ee.Reducer.mean(),
+                    scale=500
+                )
+                aqua_info = aqua_reduced.getInfo()
+
+                if 'features' in aqua_info:
+                    temp_data = {}
+                    for f in aqua_info['features']:
+                        props = f['properties']
+                        station = props['Station']
+                        ndvi = props.get('mean', -9999.0)
+                        if ndvi is None:
+                            ndvi = -9999.0
+                        temp_data[station] = ndvi
+
+                    aqua_data = [temp_data.get(station, -9999.0) for station in stations]
+
+            # 保存数据（新增grid_info参数）
+            return save_daily_data(date, terra_data, aqua_data, stations, lats, lons, grid_info, base_path)
 
         except Exception as e:
             retry_count += 1
@@ -240,14 +251,13 @@ def main():
     # 创建Himawari网格FeatureCollection并获取网格信息
     grid_fc, grid_info = get_feature_collection(stations, lats, lons)
 
-    # 定义GEE ImageCollection (使用MCD43A4版本6)
-    mcd43a4_col = ee.ImageCollection("MODIS/061/MCD43A4").select(
-        ['Nadir_Reflectance_Band1', 'Nadir_Reflectance_Band2']
-    )
-    logging.info("已初始化MCD43A4 Nadir反射率集合")
+    # 定义GEE ImageCollection
+    terra_col = ee.ImageCollection("MODIS/MOD09GA_006_NDVI").select('NDVI')
+    aqua_col = ee.ImageCollection("MODIS/MYD09GA_006_NDVI").select('NDVI')
+    logging.info("已初始化Terra和Aqua NDVI集合")
 
-    # 设置日期范围
-    start_date = datetime.date(2015, 7, 7)
+    # 设置日期范围（示例日期）
+    start_date = datetime.date(2022, 1, 1)
     end_date = datetime.date(2024, 12, 31)
 
     # 生成日期序列
@@ -265,8 +275,8 @@ def main():
         # 检查文件是否已存在
         year = date.strftime("%Y")
         month = date.strftime("%m")
-        filename = f"MODIS_NDVI_nadir_{date.strftime('%Y%m%d')}.nc"
-        file_path = os.path.join(data_path, "MODIS_NDVI_nadir", year, month, filename)
+        filename = f"MODIS_NDVI_{date.strftime('%Y%m%d')}.nc"
+        file_path = os.path.join(data_path, "MODIS_NDVI", year, month, filename)
 
         # 如果文件不存在或不完整，则加入任务队列
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 1024:
@@ -280,14 +290,14 @@ def main():
     total_tasks = len(tasks)
 
     # 设置并行线程数（根据GEE配额调整）
-    max_workers = 1  # 保守设置避免超过配额
+    max_workers = 5  # 保守设置避免超过配额
 
     with tqdm(total=total_tasks, desc="下载进度") as pbar:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交所有任务
             futures = {executor.submit(
                 process_daily_data,
-                date, mcd43a4_col, grid_fc, stations, lats, lons, grid_info, data_path
+                date, terra_col, aqua_col, grid_fc, stations, lats, lons, grid_info, data_path
             ): date for date in tasks}
 
             # 处理完成的任务
@@ -309,5 +319,73 @@ def main():
     logging.info(f"处理完成! 成功: {success_count}, 失败: {failed_count}, 总数: {total_tasks}")
 
 
+def merge_modis_data(base_path, output_path):
+    """合并所有日数据到单个NetCDF文件"""
+    try:
+        # 收集所有文件路径
+        all_files = []
+        modis_dir = os.path.join(base_path, "MODIS_NDVI")
+
+        for root, dirs, files in os.walk(modis_dir):
+            for file in files:
+                if file.endswith(".nc") and file.startswith("MODIS_NDVI_"):
+                    all_files.append(os.path.join(root, file))
+
+        if not all_files:
+            logging.error("未找到MODIS NDVI数据文件")
+            return
+
+        logging.info(f"找到 {len(all_files)} 个数据文件，开始合并...")
+
+        # 按文件名排序（即按时间排序）
+        all_files.sort(key=lambda x: os.path.basename(x).split('_')[2][:8])
+
+        # 使用xarray打开并合并文件
+        ds_list = []
+        for file in tqdm(all_files, desc="合并文件"):
+            try:
+                ds = xr.open_dataset(file)
+                # 从全局属性中获取日期并转换为时间坐标
+                date_str = ds.attrs['date']
+                ds = ds.assign_coords(time=pd.to_datetime(date_str))
+                ds = ds.expand_dims('time')
+                ds_list.append(ds)
+            except Exception as e:
+                logging.warning(f"无法打开文件 {file}: {e}")
+
+        if not ds_list:
+            logging.error("没有有效文件可合并")
+            return
+
+        # 沿时间维度合并
+        combined = xr.concat(ds_list, dim="time")
+
+        # 关闭所有文件
+        for ds in ds_list:
+            ds.close()
+
+        # 保存合并后的数据集
+        combined.to_netcdf(output_path)
+        logging.info(f"成功合并数据到: {output_path}")
+
+        # 验证文件
+        try:
+            ds = xr.open_dataset(output_path)
+            logging.info(f"合并后数据集信息: \n{ds}")
+            ds.close()
+        except Exception as e:
+            logging.error(f"验证输出文件失败: {e}")
+
+    except Exception as e:
+        logging.error(f"合并数据失败: {e}")
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
+    # 第一步：下载数据
     main()
+
+    # 第二步：合并数据（下载完成后运行）
+    # data_path = "D:/H8_data"
+    # output_nc = os.path.join(data_path, "MODIS_NDVI_combined.nc")
+    # merge_modis_data(data_path, output_nc)

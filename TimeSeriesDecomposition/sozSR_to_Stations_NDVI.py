@@ -47,7 +47,7 @@ def get_time_index():
     time_index = []
     current_date = start_date
     while current_date <= end_date:
-        for hour in list(range(0, 12)) + list(range(21, 23)):
+        for hour in list(range(0, 12)) + list(range(21, 24)):
             time_index.append(datetime(current_date.year, current_date.month,
                                        current_date.day, hour))
         current_date += timedelta(days=1)

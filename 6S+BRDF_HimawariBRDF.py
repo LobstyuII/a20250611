@@ -32,7 +32,7 @@ ANGLE_NAMES = ['SAZ', 'SAA', 'SOZ', 'SOA']
 # 处理范围
 START_DATE = datetime(2015, 7, 7)
 END_DATE = datetime(2016, 7, 7)
-PROCESS_HOURS = list(range(0, 12)) + list(range(21, 23))
+PROCESS_HOURS = list(range(0, 12)) + list(range(21, 24))
 
 # 大气廓线映射
 LATITUDE_TO_PROFILE = {
